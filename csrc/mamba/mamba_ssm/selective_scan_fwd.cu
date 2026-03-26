@@ -27,7 +27,8 @@
 
 template<int kNThreads_, int kNItems_, int kNRows_, bool kIsEvenLen_,
          bool kIsVariableB_, bool kIsVariableC_,
-         bool kHasZ_, bool kVarlen_, typename input_t_, typename weight_t_, typename state_t_>
+         bool kHasZ_, bool kVarlen_, bool kIsAligned_, int kChunkSize_,
+         typename input_t_, typename weight_t_, typename state_t_>
 struct Selective_Scan_fwd_kernel_traits {
     static_assert(kNItems_ % 4 == 0);
     using input_t = input_t_;
@@ -48,6 +49,8 @@ struct Selective_Scan_fwd_kernel_traits {
     static constexpr bool kIsVariableC = kIsVariableC_;
     static constexpr bool kHasZ = kHasZ_;
     static constexpr bool kVarlen = kVarlen_;
+    static constexpr bool kIsAligned = kIsAligned_;
+    static constexpr int kChunkSize = kChunkSize_;
 
     static constexpr bool kDirectIO = kVarlen_ ? false : kIsEvenLen && kNLoads == 1;
     static constexpr int kNLoadsIndex = kNItems / 4;
@@ -81,6 +84,8 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
     constexpr bool kIsVariableC = Ktraits::kIsVariableC;
     constexpr bool kHasZ = Ktraits::kHasZ;
     constexpr bool kVarlen = Ktraits::kVarlen;
+    constexpr bool kIsAligned = Ktraits::kIsAligned;
+    constexpr int kChunkSize = Ktraits::kChunkSize;
     constexpr int kNItems = Ktraits::kNItems;
     constexpr int kNRows = Ktraits::kNRows;
     constexpr bool kDirectIO = Ktraits::kDirectIO;
@@ -115,6 +120,13 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
     }
     const bool has_initial_state = params.has_initial_state_ptr == nullptr ? false
         : reinterpret_cast<bool *>(params.has_initial_state_ptr)[batch_id];
+    const auto u_batch_stride = params.u_batch_stride;
+    const auto u_d_stride = params.u_d_stride;
+    const auto delta_batch_stride = params.delta_batch_stride;
+    const auto delta_d_stride = params.delta_d_stride;
+    const auto ssm_states_batch_stride = params.ssm_states_batch_stride;
+    const auto ssm_states_dim_stride = params.ssm_states_dim_stride;
+    const auto ssm_states_dstate_stride = params.ssm_states_dstate_stride;
 
     const int* cache_indices = params.cache_indices_ptr == nullptr ? nullptr
         : reinterpret_cast<int *>(params.cache_indices_ptr);
@@ -123,10 +135,10 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
     if (cache_index == params.pad_slot_id){
         return;
     }
-    input_t *u = reinterpret_cast<input_t *>(params.u_ptr) + sequence_start_index * params.u_batch_stride
-        + dim_id * kNRows * params.u_d_stride;
-    input_t *delta = reinterpret_cast<input_t *>(params.delta_ptr) + sequence_start_index * params.delta_batch_stride
-        + dim_id * kNRows * params.delta_d_stride;
+    input_t *u = reinterpret_cast<input_t *>(params.u_ptr) + sequence_start_index * u_batch_stride
+        + dim_id * kNRows * u_d_stride;
+    input_t *delta = reinterpret_cast<input_t *>(params.delta_ptr) + sequence_start_index * delta_batch_stride
+        + dim_id * kNRows * delta_d_stride;
     weight_t *A = reinterpret_cast<weight_t *>(params.A_ptr) + dim_id * kNRows * params.A_d_stride;
     weight_t *B = reinterpret_cast<weight_t *>(params.B_ptr) + dim_id * kNRows * params.B_d_stride;
     input_t *Bvar = reinterpret_cast<input_t *>(params.B_ptr) + sequence_start_index * params.B_batch_stride + group_id * params.B_group_stride;
@@ -137,12 +149,12 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
     if (params.cache_enabled) {
         // APC mode: ssm_states points to the base, we'll use absolute cache slots later
         ssm_states = reinterpret_cast<typename Ktraits::state_t *>(params.ssm_states_ptr) +
-            dim_id * kNRows * params.ssm_states_dim_stride;
+            dim_id * kNRows * ssm_states_dim_stride;
     } else {
         // Non-APC mode: offset by cache_index as before
         ssm_states = reinterpret_cast<typename Ktraits::state_t *>(params.ssm_states_ptr) +
-            cache_index * params.ssm_states_batch_stride +
-            dim_id * kNRows * params.ssm_states_dim_stride;
+            cache_index * ssm_states_batch_stride +
+            dim_id * kNRows * ssm_states_dim_stride;
     }
     
     float D_val[kNRows] = {0};
@@ -160,8 +172,7 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
         }
     }
 
-    // Use block_size for chunking when APC is enabled, otherwise use 2048 for backwards compatibility
-    const int block_size = params.cache_enabled ? params.block_size : 2048;
+    const int block_size = kIsAligned ? params.block_size : kChunkSize;
 
     const int* batch_cache_indices = cache_indices != nullptr ?
                                      cache_indices + batch_id * params.cache_indices_stride : nullptr;
@@ -288,11 +299,11 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                 scan_t thread_data[kNItems];
                 #pragma unroll
                 for (int i = 0; i < kNItems; ++i) {
-                    thread_data[i] = make_float2(exp2f(delta_vals[r][i] * A_val[r]),
-                                                 !kIsVariableB ? delta_u_vals[r][i] : B_vals[i] * delta_u_vals[r][i]);
-                    if (threadIdx.x * kNItems + i >= chunk_tokens) {
-                        thread_data[i] = make_float2(1.f, 0.f);
-                    }
+                    const bool mask = threadIdx.x * kNItems + i < chunk_tokens;
+                    thread_data[i] = mask
+                        ? make_float2(exp2f(delta_vals[r][i] * A_val[r]),
+                                      !kIsVariableB ? delta_u_vals[r][i] : B_vals[i] * delta_u_vals[r][i])
+                        : make_float2(1.f, 0.f);
                 }
                 // Initialize running total
                 scan_t running_prefix;
@@ -301,9 +312,9 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                 } else {
                     // Load initial state
                     if (params.cache_enabled && has_initial_state && batch_cache_indices != nullptr) {
-                        size_t state_offset = load_cache_slot * params.ssm_states_batch_stride +
-                                             r * params.ssm_states_dim_stride +
-                                             state_idx * params.ssm_states_dstate_stride;
+                        size_t state_offset = load_cache_slot * ssm_states_batch_stride +
+                                             r * ssm_states_dim_stride +
+                                             state_idx * ssm_states_dstate_stride;
                         running_prefix = make_float2(1.0, float(ssm_states[state_offset]));
                     } else if (has_initial_state) {
                         // Non-APC mode: load from current batch position
@@ -323,24 +334,35 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                 if (threadIdx.x == 0) {
                     smem_running_prefix[state_idx + r * MAX_DSTATE] = prefix_op.running_prefix;
 
-                    // Store state at the end of each aligned chunk when cache is enabled
+                    const bool can_use_final_only_writeback = (
+                        params.cache_enabled
+                        && batch_cache_indices != nullptr
+                        && block_idx_last_scheduled != nullptr
+                        && cu_chunk_seqlen != nullptr
+                        && last_chunk_indices != nullptr
+                    );
+                    // Store state on each chunk unless final-only writeback is
+                    // explicitly safe from provided chunk metadata.
                     if (params.cache_enabled && batch_cache_indices != nullptr) {
                         size_t cache_slot;
-                        if (chunk == n_chunks - 1) {
+                        if (can_use_final_only_writeback) {
+                            if (chunk != n_chunks - 1) {
+                                continue;
+                            }
                             cache_slot = batch_cache_indices[block_idx_last_scheduled[batch_id]];
                         } else {
                             const int block_idx_completed = (current_position + chunk_tokens - 1) / block_size;
                             cache_slot = batch_cache_indices[block_idx_completed];
                         }
 
-                        size_t state_offset = cache_slot * params.ssm_states_batch_stride +
-                                             r * params.ssm_states_dim_stride +
-                                             state_idx * params.ssm_states_dstate_stride;
+                        size_t state_offset = cache_slot * ssm_states_batch_stride +
+                                             r * ssm_states_dim_stride +
+                                             state_idx * ssm_states_dstate_stride;
 
                         ssm_states[state_offset] = typename Ktraits::state_t(prefix_op.running_prefix.y);
                     } else if (!params.cache_enabled && chunk == n_chunks - 1) {
                         // Non-APC mode: store only final state at current batch position
-                        ssm_states[state_idx * params.ssm_states_dstate_stride] = typename Ktraits::state_t(prefix_op.running_prefix.y);
+                        ssm_states[state_idx * ssm_states_dstate_stride] = typename Ktraits::state_t(prefix_op.running_prefix.y);
                     }
                 }
                 #pragma unroll
@@ -391,7 +413,8 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
     }
 }
 
-template<int kNThreads, int kNItems, typename input_t, typename weight_t, typename state_t>
+template<bool IsAligned, int ChunkSize, int kNThreads, int kNItems, typename input_t,
+         typename weight_t, typename state_t>
 void selective_scan_fwd_launch(SSMParamsBase &params, cudaStream_t stream) {
     // Only kNRows == 1 is tested for now, which ofc doesn't differ from previously when we had each block
     // processing 1 row.
@@ -402,7 +425,10 @@ void selective_scan_fwd_launch(SSMParamsBase &params, cudaStream_t stream) {
     BOOL_SWITCH(params.seqlen % (kNThreads * kNItems) == 0, kIsEvenLen, [&] {
         BOOL_SWITCH(params.z_ptr != nullptr , kHasZ, [&] {
             BOOL_SWITCH(params.query_start_loc_ptr != nullptr , kVarlen, [&] {
-                using Ktraits = Selective_Scan_fwd_kernel_traits<kNThreads, kNItems, kNRows, kIsEvenLen, kIsVariableB, kIsVariableC, kHasZ,  kVarlen, input_t, weight_t, state_t>;
+                using Ktraits = Selective_Scan_fwd_kernel_traits<
+                    kNThreads, kNItems, kNRows, kIsEvenLen, kIsVariableB,
+                    kIsVariableC, kHasZ, kVarlen, IsAligned, ChunkSize,
+                    input_t, weight_t, state_t>;
                 constexpr int kSmemSize = Ktraits::kSmemSize + kNRows * MAX_DSTATE * sizeof(typename Ktraits::scan_t);
                 dim3 grid(params.batch, params.dim / kNRows);
                 auto kernel = &selective_scan_fwd_kernel<Ktraits>;
@@ -427,29 +453,29 @@ void selective_scan_fwd_cuda(SSMParamsBase &params, cudaStream_t stream) {
 
     #ifndef USE_ROCM
         if (params.cache_enabled && params.block_size == 1024) {
-            selective_scan_fwd_launch<64, 16, input_t, weight_t, state_t>(params, stream);
+            selective_scan_fwd_launch<true, 1024, 64, 16, input_t, weight_t, state_t>(params, stream);
         } else if (params.seqlen <= 128) {
-            selective_scan_fwd_launch<32, 4, input_t, weight_t, state_t>(params, stream);
+            selective_scan_fwd_launch<false, 2048, 32, 4, input_t, weight_t, state_t>(params, stream);
         } else if (params.seqlen <= 256) {
-            selective_scan_fwd_launch<32, 8, input_t, weight_t, state_t>(params, stream);
+            selective_scan_fwd_launch<false, 2048, 32, 8, input_t, weight_t, state_t>(params, stream);
         } else if (params.seqlen <= 512) {
-            selective_scan_fwd_launch<32, 16, input_t, weight_t, state_t>(params, stream);
+            selective_scan_fwd_launch<false, 2048, 32, 16, input_t, weight_t, state_t>(params, stream);
         } else if (params.seqlen <= 1024) {
-            selective_scan_fwd_launch<64, 16, input_t, weight_t, state_t>(params, stream);
+            selective_scan_fwd_launch<false, 2048, 64, 16, input_t, weight_t, state_t>(params, stream);
         } else {
-            selective_scan_fwd_launch<128, 16, input_t, weight_t, state_t>(params, stream);
+            selective_scan_fwd_launch<false, 2048, 128, 16, input_t, weight_t, state_t>(params, stream);
         }
     #else
         if (params.cache_enabled && params.block_size == 1024) {
-            selective_scan_fwd_launch<64, 16, input_t, weight_t, state_t>(params, stream);
+            selective_scan_fwd_launch<true, 1024, 64, 16, input_t, weight_t, state_t>(params, stream);
         } else if (params.seqlen <= 256) {
-            selective_scan_fwd_launch<64, 4, input_t, weight_t, state_t>(params, stream);
+            selective_scan_fwd_launch<false, 2048, 64, 4, input_t, weight_t, state_t>(params, stream);
         } else if (params.seqlen <= 512) {
-            selective_scan_fwd_launch<64, 8, input_t, weight_t, state_t>(params, stream);
+            selective_scan_fwd_launch<false, 2048, 64, 8, input_t, weight_t, state_t>(params, stream);
         } else if (params.seqlen <= 1024) {
-            selective_scan_fwd_launch<64, 16, input_t, weight_t, state_t>(params, stream);
+            selective_scan_fwd_launch<false, 2048, 64, 16, input_t, weight_t, state_t>(params, stream);
         } else {
-            selective_scan_fwd_launch<128, 16, input_t, weight_t, state_t>(params, stream);
+            selective_scan_fwd_launch<false, 2048, 128, 16, input_t, weight_t, state_t>(params, stream);
         }
     #endif
 }

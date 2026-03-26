@@ -154,6 +154,76 @@ def make_kv_cache_config_hybrid_model(
     )
 
 
+def test_allocate_success_path_unchanged(caplog):
+    block_size = 16
+    manager = KVCacheManager(
+        kv_cache_config=make_kv_cache_config(block_size=block_size, num_blocks=8),
+        max_model_len=1024,
+        hash_block_size=block_size,
+        enable_caching=True,
+        use_eagle=False,
+        log_stats=False,
+    )
+    request = make_request(
+        request_id="success",
+        prompt_token_ids=list(range(8)),
+        block_size=block_size,
+        hash_fn=sha256,
+    )
+
+    caplog.set_level("DEBUG")
+    new_blocks = manager.allocate_slots(request=request, num_new_tokens=8)
+    assert new_blocks is not None
+    assert len(new_blocks.blocks[0]) == 1
+    assert "allocation_fail_reason" not in caplog.text
+
+
+def test_allocate_impossible_fast_fail():
+    block_size = 16
+    manager = KVCacheManager(
+        kv_cache_config=make_kv_cache_config(block_size=block_size, num_blocks=2),
+        max_model_len=4096,
+        hash_block_size=block_size,
+        enable_caching=True,
+        use_eagle=False,
+        log_stats=False,
+    )
+    request = make_request(
+        request_id="impossible",
+        prompt_token_ids=list(range(100)),
+        block_size=block_size,
+        hash_fn=sha256,
+    )
+
+    new_blocks = manager.allocate_slots(request=request, num_new_tokens=100)
+    assert new_blocks is None
+
+
+def test_metrics_emitted_on_failure(caplog):
+    block_size = 16
+    manager = KVCacheManager(
+        kv_cache_config=make_kv_cache_config(block_size=block_size, num_blocks=2),
+        max_model_len=4096,
+        hash_block_size=block_size,
+        enable_caching=True,
+        use_eagle=False,
+        log_stats=False,
+    )
+    request = make_request(
+        request_id="metrics",
+        prompt_token_ids=list(range(100)),
+        block_size=block_size,
+        hash_fn=sha256,
+    )
+
+    caplog.set_level("DEBUG")
+    new_blocks = manager.allocate_slots(request=request, num_new_tokens=100)
+    assert new_blocks is None
+    assert "allocation_fail_reason=insufficient_total_capacity" in caplog.text
+    assert "estimated_blocks_needed=" in caplog.text
+    assert "free_blocks_at_attempt=" in caplog.text
+
+
 def make_kv_cache_config_three_types(
     block_size: int, num_blocks: int, third_spec_type: str = "mamba"
 ) -> KVCacheConfig:
