@@ -343,9 +343,12 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                     const bool can_use_final_only_writeback = (
                         params.cache_enabled
                         && batch_cache_indices != nullptr
+                        && block_idx_first_scheduled != nullptr
                         && block_idx_last_scheduled != nullptr
+                        && initial_state_idx != nullptr
                         && cu_chunk_seqlen != nullptr
                         && last_chunk_indices != nullptr
+                        && n_chunks > 0
                     );
                     // Store state on each chunk unless final-only writeback is
                     // explicitly safe from provided chunk metadata.

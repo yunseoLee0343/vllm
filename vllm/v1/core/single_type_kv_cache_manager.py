@@ -784,6 +784,10 @@ class MambaManager(SingleTypeKVCacheManager):
     def _should_defer_tail_persistence(
         self, request_id: str, num_tokens_main_model: int
     ) -> bool:
+        if request_id in self._deferred_tail_reqs and self._has_uncached_tail(
+            num_tokens_main_model
+        ):
+            return True
         return (
             request_id in self._allocated_block_reqs
             and self._has_uncached_tail(num_tokens_main_model)
@@ -1035,6 +1039,8 @@ class MambaManager(SingleTypeKVCacheManager):
                         request_id, num_tokens_main_model
                     )
                 ):
+                    # Keep progress in a logical deferred-tail state until an
+                    # aligned persistence point is reached.
                     self._deferred_tail_reqs.add(request_id)
                     return []
                 new_blocks = self.block_pool.get_new_blocks(num_new_blocks)
