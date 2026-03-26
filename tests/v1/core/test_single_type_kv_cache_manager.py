@@ -14,9 +14,14 @@ from vllm.v1.core.kv_cache_utils import (
 )
 from vllm.v1.core.single_type_kv_cache_manager import (
     ChunkedLocalAttentionManager,
+    MambaManager,
     SlidingWindowManager,
 )
-from vllm.v1.kv_cache_interface import ChunkedLocalAttentionSpec, SlidingWindowSpec
+from vllm.v1.kv_cache_interface import (
+    ChunkedLocalAttentionSpec,
+    MambaSpec,
+    SlidingWindowSpec,
+)
 
 pytestmark = pytest.mark.cpu_test
 
@@ -39,6 +44,130 @@ def get_chunked_local_attention_manager(
         enable_caching=enable_caching,
         kv_cache_group_id=0,
     )
+
+
+def get_mamba_manager(block_pool, block_size=16, cache_mode="align"):
+    mamba_spec = MambaSpec(
+        block_size=block_size,
+        shapes=((1, 1),),
+        dtypes=(torch.float32,),
+        mamba_cache_mode=cache_mode,
+    )
+    return MambaManager(
+        mamba_spec,
+        block_pool=block_pool,
+        enable_caching=True,
+        kv_cache_group_id=0,
+    )
+
+
+def _add_running_request_blocks(
+    manager: MambaManager, request_id: str, num_blocks: int
+) -> None:
+    manager.req_to_blocks[request_id] = manager.block_pool.get_new_blocks(num_blocks)
+    manager._allocated_block_reqs.add(request_id)
+
+
+def test_aligned_only_parity():
+    block_pool = BlockPool(num_gpu_blocks=64, enable_caching=True, hash_block_size=16)
+    manager = get_mamba_manager(block_pool, block_size=16, cache_mode="align")
+    request_id = "aligned_only"
+    _add_running_request_blocks(manager, request_id, num_blocks=2)
+
+    # Aligned boundary requires persistence allocation behavior.
+    needed = manager.get_num_blocks_to_allocate(
+        request_id=request_id,
+        num_tokens=48,
+        new_computed_blocks=[],
+        total_computed_tokens=32,
+        num_tokens_main_model=48,
+    )
+    assert needed == 1
+    new_blocks = manager.allocate_new_blocks(
+        request_id=request_id, num_tokens=48, num_tokens_main_model=48
+    )
+    assert len(new_blocks) == 1
+
+
+def test_aligned_plus_tail_parity():
+    block_pool = BlockPool(num_gpu_blocks=64, enable_caching=True, hash_block_size=16)
+    manager = get_mamba_manager(block_pool, block_size=16, cache_mode="align")
+    request_id = "aligned_plus_tail"
+    _add_running_request_blocks(manager, request_id, num_blocks=2)
+
+    # Sub-block tail should not force immediate persistence.
+    needed_tail = manager.get_num_blocks_to_allocate(
+        request_id=request_id,
+        num_tokens=41,
+        new_computed_blocks=[],
+        total_computed_tokens=32,
+        num_tokens_main_model=41,
+    )
+    assert needed_tail == 0
+    tail_blocks = manager.allocate_new_blocks(
+        request_id=request_id, num_tokens=41, num_tokens_main_model=41
+    )
+    assert tail_blocks == []
+    assert request_id in manager._deferred_tail_reqs
+
+    # Once aligned, persistence resumes.
+    needed_aligned = manager.get_num_blocks_to_allocate(
+        request_id=request_id,
+        num_tokens=48,
+        new_computed_blocks=[],
+        total_computed_tokens=41,
+        num_tokens_main_model=48,
+    )
+    assert needed_aligned == 1
+
+
+def test_tail_resume_parity():
+    block_pool = BlockPool(num_gpu_blocks=64, enable_caching=True, hash_block_size=16)
+    manager = get_mamba_manager(block_pool, block_size=16, cache_mode="align")
+    request_id = "tail_resume"
+    _add_running_request_blocks(manager, request_id, num_blocks=2)
+    _ = manager.allocate_new_blocks(
+        request_id=request_id, num_tokens=41, num_tokens_main_model=41
+    )
+    assert request_id in manager._deferred_tail_reqs
+    manager.free(request_id)
+    assert request_id not in manager._deferred_tail_reqs
+
+
+def test_varlen_tail_parity():
+    block_pool = BlockPool(num_gpu_blocks=64, enable_caching=True, hash_block_size=16)
+    manager = get_mamba_manager(block_pool, block_size=16, cache_mode="align")
+    request_id = "varlen_tail"
+    _add_running_request_blocks(manager, request_id, num_blocks=1)
+
+    # Simulate varlen-like shorter tail chunk behavior by advancing to a
+    # non-aligned boundary.
+    needed = manager.get_num_blocks_to_allocate(
+        request_id=request_id,
+        num_tokens=23,
+        new_computed_blocks=[],
+        total_computed_tokens=16,
+        num_tokens_main_model=23,
+    )
+    assert needed == 0
+
+
+def test_apc_tail_parity():
+    block_pool = BlockPool(num_gpu_blocks=64, enable_caching=True, hash_block_size=16)
+    manager = get_mamba_manager(block_pool, block_size=16, cache_mode="align")
+    request_id = "apc_tail"
+    _add_running_request_blocks(manager, request_id, num_blocks=2)
+
+    # Simulate APC-like chunk scheduling where an unfinished block tail is
+    # followed by a future aligned persistence point.
+    tail_blocks = manager.allocate_new_blocks(
+        request_id=request_id, num_tokens=47, num_tokens_main_model=47
+    )
+    assert tail_blocks == []
+    aligned_blocks = manager.allocate_new_blocks(
+        request_id=request_id, num_tokens=48, num_tokens_main_model=48
+    )
+    assert len(aligned_blocks) == 1
 
 
 def test_chunked_local_attention_possible_cached_prefix():
