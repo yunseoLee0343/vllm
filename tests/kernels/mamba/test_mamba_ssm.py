@@ -772,6 +772,71 @@ def test_selective_state_update_with_batch_indices(
     assert torch.allclose(out[:batch_size], out_ref, rtol=rtol, atol=atol)
 
 
+def test_output_parity_non_apc():
+    test_selective_scan(
+        is_variable_B=True,
+        is_variable_C=True,
+        varBC_groups=1,
+        has_D=True,
+        has_z=False,
+        has_delta_bias=True,
+        delta_softplus=True,
+        seqlen=1024,
+        itype=torch.float32,
+        wtype=torch.float32,
+        scan_chunks=1,
+    )
+
+
+def test_output_parity_apc():
+    test_selective_scan(
+        is_variable_B=True,
+        is_variable_C=True,
+        varBC_groups=1,
+        has_D=True,
+        has_z=True,
+        has_delta_bias=True,
+        delta_softplus=True,
+        seqlen=4096,
+        itype=torch.float32,
+        wtype=torch.float32,
+        scan_chunks=3,
+    )
+
+
+def test_varlen_parity():
+    test_selective_scan_varlen(
+        with_padding=True,
+        is_variable_B=True,
+        is_variable_C=True,
+        varBC_groups=1,
+        has_D=True,
+        has_z=True,
+        has_delta_bias=True,
+        delta_softplus=True,
+        return_last_state=True,
+        seqlen=1024,
+        itype=torch.float32,
+        wtype=torch.float32,
+    )
+
+
+def test_z_path_parity():
+    test_selective_scan(
+        is_variable_B=True,
+        is_variable_C=True,
+        varBC_groups=2,
+        has_D=True,
+        has_z=True,
+        has_delta_bias=True,
+        delta_softplus=True,
+        seqlen=1024,
+        itype=torch.bfloat16,
+        wtype=torch.float32,
+        scan_chunks=1,
+    )
+
+
 @pytest.mark.parametrize("itype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("has_z", [False, True])
 @pytest.mark.parametrize("tie_hdim", [False, True])
