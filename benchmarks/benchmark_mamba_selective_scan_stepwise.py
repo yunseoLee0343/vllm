@@ -223,6 +223,15 @@ def run(args: argparse.Namespace) -> None:
         useful_compute_ratio = 1.0 - (stats.masked_lanes / total_lanes)
     useful_compute_ratio = max(0.0, min(1.0, useful_compute_ratio))
     cache_writes_per_token = stats.state_writes / max(stats.scheduled_tokens, 1)
+    if dtype in [torch.float32]:
+        element_size = 4
+    elif dtype in [torch.float16, torch.bfloat16]:
+        element_size = 2
+    else:
+        element_size = 4
+    state_write_bytes = stats.state_writes * element_size
+    bytes_per_token = state_write_bytes / max(stats.scheduled_tokens, 1)
+    memory_bound_indicator = state_write_bytes / max(total_runtime, 1e-9)
     zero_fill_fraction = stats.zero_fill_time / max(total_runtime, 1e-9)
 
     print("Mamba selective_scan step-wise benchmark")
@@ -241,6 +250,9 @@ def run(args: argparse.Namespace) -> None:
     print(f"estimated_masked_lane_ratio={1.0 - useful_compute_ratio:.6f}")
     print(f"useful_compute_ratio={useful_compute_ratio:.6f}")
     print(f"cache_writes_per_token={cache_writes_per_token:.6f}")
+    print(f"state_write_bytes={state_write_bytes}")
+    print(f"bytes_per_token={bytes_per_token:.6f}")
+    print(f"memory_bound_indicator={memory_bound_indicator:.6f}")
     print(f"zero_fill_time_fraction={zero_fill_fraction:.6f}")
 
 
