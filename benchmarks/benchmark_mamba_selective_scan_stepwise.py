@@ -216,9 +216,12 @@ def run(args: argparse.Namespace) -> None:
     eff_tokens_per_sec = stats.scheduled_tokens / max(total_runtime, 1e-9)
     stall_ratio = stats.stalled_steps / max(stats.total_steps, 1)
     avg_tokens_per_step = stats.scheduled_tokens / max(stats.total_steps, 1)
-    useful_compute_ratio = 1.0
-    if stats.mask_lanes_total > 0:
-        useful_compute_ratio = 1.0 - (stats.masked_lanes / stats.mask_lanes_total)
+    total_lanes = stats.mask_lanes_total
+    if total_lanes == 0:
+        useful_compute_ratio = 1.0
+    else:
+        useful_compute_ratio = 1.0 - (stats.masked_lanes / total_lanes)
+    useful_compute_ratio = max(0.0, min(1.0, useful_compute_ratio))
     cache_writes_per_token = stats.state_writes / max(stats.scheduled_tokens, 1)
     zero_fill_fraction = stats.zero_fill_time / max(total_runtime, 1e-9)
 
@@ -236,7 +239,7 @@ def run(args: argparse.Namespace) -> None:
     print(f"total_chunks={stats.total_chunks}")
     print(f"avg_chunk_tokens={avg_chunk_tokens:.3f}")
     print(f"estimated_masked_lane_ratio={1.0 - useful_compute_ratio:.6f}")
-    print(f"estimated_useful_compute_ratio={useful_compute_ratio:.6f}")
+    print(f"useful_compute_ratio={useful_compute_ratio:.6f}")
     print(f"cache_writes_per_token={cache_writes_per_token:.6f}")
     print(f"zero_fill_time_fraction={zero_fill_fraction:.6f}")
 
