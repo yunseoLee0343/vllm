@@ -78,6 +78,9 @@ def build_step_chunks(start: int, n_tokens: int, block_size: int) -> list[int]:
 
 
 def run(args: argparse.Namespace) -> None:
+    if args.force_aligned and args.force_unaligned:
+        raise ValueError("--force-aligned and --force-unaligned are mutually exclusive")
+
     device = args.device
     dtype = torch.float16
     wtype = torch.float32
@@ -200,7 +203,13 @@ def run(args: argparse.Namespace) -> None:
         # masked-lane ratio estimate based on tile size.
         for c in chunks:
             tile = args.tile_size
-            masked = max(tile - c, 0)
+            if args.force_aligned:
+                apply_masking = False
+            elif args.force_unaligned:
+                apply_masking = True
+            else:
+                apply_masking = c < tile
+            masked = max(tile - c, 0) if apply_masking else 0
             stats.masked_lanes += masked
             stats.mask_lanes_total += tile
 
@@ -232,6 +241,9 @@ def run(args: argparse.Namespace) -> None:
     state_write_bytes = stats.state_writes * element_size
     bytes_per_token = state_write_bytes / max(stats.scheduled_tokens, 1)
     memory_bound_indicator = state_write_bytes / max(total_runtime, 1e-9)
+    scheduler_efficiency = 1.0 - stall_ratio
+    compute_efficiency = useful_compute_ratio
+    memory_efficiency = 1.0 / (1.0 + memory_bound_indicator)
     zero_fill_fraction = stats.zero_fill_time / max(total_runtime, 1e-9)
 
     print("Mamba selective_scan step-wise benchmark")
@@ -253,6 +265,9 @@ def run(args: argparse.Namespace) -> None:
     print(f"state_write_bytes={state_write_bytes}")
     print(f"bytes_per_token={bytes_per_token:.6f}")
     print(f"memory_bound_indicator={memory_bound_indicator:.6f}")
+    print(f"scheduler_efficiency={scheduler_efficiency:.6f}")
+    print(f"compute_efficiency={compute_efficiency:.6f}")
+    print(f"memory_efficiency={memory_efficiency:.6f}")
     print(f"zero_fill_time_fraction={zero_fill_fraction:.6f}")
 
 
@@ -266,6 +281,8 @@ if __name__ == "__main__":
     parser.add_argument("--tile-size", type=int, default=2048)
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--use-eagle", action="store_true")
+    parser.add_argument("--force-aligned", action="store_true")
+    parser.add_argument("--force-unaligned", action="store_true")
     parser.add_argument("--device", type=str, default="cuda")
     args = parser.parse_args()
     run(args)
