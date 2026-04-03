@@ -43,6 +43,9 @@ envs = load_module_from_path("envs", os.path.join(ROOT_DIR, "vllm", "envs.py"))
 VLLM_LIGHTWEIGHT_BUILD = os.getenv("VLLM_LIGHTWEIGHT_BUILD", "1") == "1"
 VLLM_FORCE_CUDA_ARCH = os.getenv("VLLM_FORCE_CUDA_ARCH", "8.6")
 VLLM_DISABLE_CUTLASS_FETCH = os.getenv("VLLM_DISABLE_CUTLASS_FETCH", "1") == "1"
+VLLM_DISABLE_CUDA_FP8 = os.getenv(
+    "VLLM_DISABLE_CUDA_FP8", "1" if VLLM_LIGHTWEIGHT_BUILD else "0"
+) == "1"
 
 if VLLM_LIGHTWEIGHT_BUILD:
     logger.warning("Using LIGHTWEIGHT BUILD mode (reduced kernels)")
@@ -267,6 +270,12 @@ class cmake_build_ext(build_ext):
 
         if nvcc_threads:
             cmake_args += ["-DNVCC_THREADS={}".format(nvcc_threads)]
+
+        cmake_args += [
+            "-DVLLM_DISABLE_CUDA_FP8={}".format(
+                "ON" if VLLM_DISABLE_CUDA_FP8 else "OFF"
+            )
+        ]
 
         if is_ninja_available():
             build_tool = ["-G", "Ninja"]

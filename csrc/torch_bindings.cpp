@@ -19,12 +19,14 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
   // vLLM custom ops
   //
 
+#if !defined(VLLM_DISABLE_CUDA_FP8)
   ops.def(
       "persistent_masked_m_silu_mul_quant(Tensor input, Tensor counts, Tensor! "
       "y_q, Tensor! y_s,"
       "bool use_ue8m0) -> ()");
   ops.impl("persistent_masked_m_silu_mul_quant", torch::kCUDA,
            &persistent_masked_m_silu_mul_quant);
+#endif
 
   ops.def("weak_ref_tensor(Tensor input) -> Tensor");
   ops.impl("weak_ref_tensor", torch::kCUDA, &weak_ref_tensor);
@@ -106,9 +108,11 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
   ops.def("silu_and_mul(Tensor! result, Tensor input) -> ()");
   ops.impl("silu_and_mul", torch::kCUDA, &silu_and_mul);
 
+#if !defined(VLLM_DISABLE_CUDA_FP8)
   ops.def(
       "silu_and_mul_quant(Tensor! result, Tensor input, Tensor scale) -> ()");
   ops.impl("silu_and_mul_quant", torch::kCUDA, &silu_and_mul_quant);
+#endif
 
   ops.def("mul_and_silu(Tensor! out, Tensor input) -> ()");
   ops.impl("mul_and_silu", torch::kCUDA, &mul_and_silu);
@@ -192,6 +196,7 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
 
   // Layernorm-quant
   // Apply Root Mean Square (RMS) Normalization to the input tensor.
+#if !defined(VLLM_DISABLE_CUDA_FP8)
   ops.def(
       "rms_norm_static_fp8_quant(Tensor! result, Tensor input, Tensor weight, "
       "Tensor scale, float epsilon) -> "
@@ -206,6 +211,7 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
       "Tensor scale, float epsilon) -> ()");
   ops.impl("fused_add_rms_norm_static_fp8_quant", torch::kCUDA,
            &fused_add_rms_norm_static_fp8_quant);
+#endif
 
   // Fused Layernorm + Quant kernels
   ops.def(
@@ -425,6 +431,7 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
   // Supports per-tensor, per-channel, per-token, and arbitrary 2D group
   // scaling. Optional group_m/group_n specify the group shape explicitly;
   // required for 1D scales to disambiguate per-channel vs per-token.
+#if !defined(VLLM_DISABLE_CUDA_FP8)
   ops.def(
       "static_scaled_fp8_quant(Tensor! result, Tensor input, Tensor scale, "
       "(int, int)? group_shape=None) -> ()");
@@ -444,6 +451,7 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
       "()");
   ops.impl("dynamic_per_token_scaled_fp8_quant", torch::kCUDA,
            &dynamic_per_token_scaled_fp8_quant);
+#endif
 
   // Compute int8 quantized tensor for given scaling factor.
   ops.def(
@@ -553,11 +561,13 @@ TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _cache_ops), cache_ops) {
   cache_ops.impl("concat_and_cache_mla_rope_fused", torch::kCUDA,
                  &concat_and_cache_mla_rope_fused);
 
+#if !defined(VLLM_DISABLE_CUDA_FP8)
   // Convert the key and value cache to fp8 data type.
   cache_ops.def(
       "convert_fp8(Tensor! dst_cache, Tensor src_cache, float scale, "
       "str kv_cache_dtype) -> ()");
   cache_ops.impl("convert_fp8", torch::kCUDA, &convert_fp8);
+#endif
 
   // Gather cache blocks from src_cache to dst, dequantizing from
   // src_cache's dtype to dst's dtype if necessary.
@@ -576,12 +586,14 @@ TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _cache_ops), cache_ops) {
       "Tensor cu_seq_lens, int batch_size, Tensor? seq_starts) -> ()");
   cache_ops.impl("cp_gather_cache", torch::kCUDA, &cp_gather_cache);
 
+#if !defined(VLLM_DISABLE_CUDA_FP8)
   cache_ops.def(
       "cp_gather_and_upconvert_fp8_kv_cache(Tensor src_cache, Tensor! dst, "
       "Tensor block_table, Tensor seq_lens, Tensor workspace_starts, int "
       "batch_size) -> ()");
   cache_ops.impl("cp_gather_and_upconvert_fp8_kv_cache", torch::kCUDA,
                  &cp_gather_and_upconvert_fp8_kv_cache);
+#endif
 
   cache_ops.def(
       "indexer_k_quant_and_cache(Tensor k, Tensor! kv_cache, Tensor "

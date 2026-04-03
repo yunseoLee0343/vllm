@@ -9,7 +9,10 @@
 #include <cmath>
 #include <torch/types.h>
 
-#ifndef USE_ROCM
+#if defined(VLLM_DISABLE_FLOAT8_HEADERS) && VLLM_DISABLE_FLOAT8_HEADERS
+  #define VLLM_HAS_C10_FLOAT8_HEADERS 0
+  #define MAYBE_HOST_DEVICE
+#elif !defined(USE_ROCM)
   #if __has_include(<c10/util/Float8_e4m3fn.h>)
     #define VLLM_HAS_C10_FLOAT8_HEADERS 1
     #include <c10/util/Float8_e4m3fn.h>

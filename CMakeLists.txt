@@ -28,6 +28,11 @@ message(STATUS "Target device: ${VLLM_TARGET_DEVICE}")
 option(VLLM_LIGHTWEIGHT_BUILD "Reduce build scope (disable heavy kernels)" ON)
 set(VLLM_FORCE_CUDA_ARCH "8.6" CACHE STRING "Force single CUDA arch (e.g. 8.6 for A6000)")
 option(VLLM_DISABLE_CUTLASS_FETCH "Disable CUTLASS git clone" ON)
+set(VLLM_DISABLE_CUDA_FP8_DEFAULT OFF)
+if(VLLM_LIGHTWEIGHT_BUILD)
+  set(VLLM_DISABLE_CUDA_FP8_DEFAULT ON)
+endif()
+option(VLLM_DISABLE_CUDA_FP8 "Disable CUDA FP8 kernels and float8 headers" ${VLLM_DISABLE_CUDA_FP8_DEFAULT})
 
 if(VLLM_LIGHTWEIGHT_BUILD)
   message(STATUS "Lightweight build ENABLED")
@@ -193,6 +198,12 @@ endif()
 # The final set of arches is stored in `VLLM_GPU_FLAGS`.
 #
 get_torch_gpu_compiler_flags(VLLM_GPU_FLAGS ${VLLM_GPU_LANG})
+if(VLLM_DISABLE_CUDA_FP8 AND VLLM_GPU_LANG STREQUAL "CUDA")
+  message(STATUS "CUDA FP8 kernels disabled")
+  list(REMOVE_ITEM VLLM_GPU_FLAGS "-DENABLE_FP8")
+  list(APPEND VLLM_GPU_FLAGS "-DVLLM_DISABLE_CUDA_FP8=1")
+  list(APPEND VLLM_GPU_FLAGS "-DVLLM_DISABLE_FLOAT8_HEADERS=1")
+endif()
 
 #
 # Set nvcc parallelism.
@@ -320,6 +331,13 @@ set(VLLM_EXT_SRC
   "csrc/cuda_utils_kernels.cu"
   "csrc/custom_all_reduce.cu"
   "csrc/torch_bindings.cpp")
+
+if(VLLM_DISABLE_CUDA_FP8 AND VLLM_GPU_LANG STREQUAL "CUDA")
+  list(REMOVE_ITEM VLLM_EXT_SRC
+    "csrc/activation_kernels.cu"
+    "csrc/layernorm_quant_kernels.cu"
+    "csrc/quantization/w8a8/fp8/common.cu")
+endif()
 
 if(VLLM_GPU_LANG STREQUAL "CUDA")
   SET(CUTLASS_ENABLE_HEADERS_ONLY ON CACHE BOOL "Enable only the header library")

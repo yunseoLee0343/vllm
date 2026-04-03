@@ -80,6 +80,7 @@ if TYPE_CHECKING:
     VLLM_MM_HASHER_ALGORITHM: str = "blake3"
     VLLM_TARGET_DEVICE: str = "cuda"
     VLLM_MAIN_CUDA_VERSION: str = "12.9"
+    VLLM_DISABLE_CUDA_FP8: bool = False
     VLLM_FLOAT32_MATMUL_PRECISION: Literal["highest", "high", "medium"] = "highest"
     VLLM_BATCH_INVARIANT: bool = False
     MAX_JOBS: str | None = None
@@ -497,6 +498,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Main CUDA version of vLLM. This follows PyTorch but can be overridden.
     "VLLM_MAIN_CUDA_VERSION": lambda: os.getenv("VLLM_MAIN_CUDA_VERSION", "").lower()
     or "12.9",
+    # Disable CUDA FP8 kernels and float8-dependent custom ops.
+    "VLLM_DISABLE_CUDA_FP8": lambda: bool(
+        int(os.getenv("VLLM_DISABLE_CUDA_FP8", "0"))
+    ),
     # Controls PyTorch float32 matmul precision mode within vLLM workers.
     # Valid options mirror torch.set_float32_matmul_precision
     "VLLM_FLOAT32_MATMUL_PRECISION": env_with_choices(

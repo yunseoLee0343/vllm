@@ -883,7 +883,7 @@ class VllmConfig:
         # On H100 the CUDA kernel is faster than
         # native implementation
         # https://github.com/vllm-project/vllm/issues/25094
-        if has_blocked_weights():
+        if has_blocked_weights() and not envs.VLLM_DISABLE_CUDA_FP8:
             custom_ops = self.compilation_config.custom_ops
             if "-quant_fp8" not in custom_ops:
                 custom_ops.append("+quant_fp8")
@@ -1296,7 +1296,7 @@ class VllmConfig:
         # On H100 the CUDA kernel is faster than
         # native implementation
         # https://github.com/vllm-project/vllm/issues/25094
-        if has_blocked_weights():
+        if has_blocked_weights() and not envs.VLLM_DISABLE_CUDA_FP8:
             custom_ops = self.compilation_config.custom_ops
             if "-quant_fp8" not in custom_ops:
                 custom_ops.append("+quant_fp8")

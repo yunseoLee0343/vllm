@@ -3,9 +3,8 @@
  * __device__ datatypes vectorized by 4
  */
 
-// Include both AMD and NVIDIA fp8 types to avoid circular import
-// #include <torch/headeronly/util/Float8_e4m3fnuz.h>
-// #include <torch/headeronly/util/Float8_e4m3fn.h>
+// Float8 header-only includes are intentionally omitted here.
+// Stable kernels use ScalarType tags and CUDA/ROCm conversion helpers instead.
 
 namespace vllm {
 
