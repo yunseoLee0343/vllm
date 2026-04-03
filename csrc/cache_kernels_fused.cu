@@ -4,12 +4,56 @@
 
 #include "cuda_compat.h"
 #include "dispatch_utils.h"
+#include "attention/attention_dtypes.h"
 
 #include "quantization/w8a8/fp8/common.cuh"
-#ifdef USE_ROCM
-  #include "quantization/w8a8/fp8/amd/quant_utils.cuh"
+
+#if VLLM_HAS_C10_FLOAT8_HEADERS
+  #ifdef USE_ROCM
+    #include "quantization/w8a8/fp8/amd/quant_utils.cuh"
+  #else
+    #include "quantization/w8a8/fp8/nvidia/quant_utils.cuh"
+  #endif
 #else
-  #include "quantization/w8a8/fp8/nvidia/quant_utils.cuh"
+namespace vllm {
+namespace fp8 {
+
+template <typename Tout, typename Tin, Fp8KVCacheDataType kv_dt>
+__inline__ __device__ Tout scaled_convert(const Tin& x, const float) {
+  return static_cast<Tout>(x);
+}
+
+}  // namespace fp8
+}  // namespace vllm
+
+  #define DISPATCH_BY_KV_CACHE_DTYPE(SRC_DTYPE, KV_DTYPE, FN)                  \
+    if (KV_DTYPE == "auto") {                                                  \
+      if (SRC_DTYPE == at::ScalarType::Float) {                                \
+        FN(float, float, vllm::Fp8KVCacheDataType::kAuto);                     \
+      } else if (SRC_DTYPE == at::ScalarType::Half) {                          \
+        FN(uint16_t, uint16_t, vllm::Fp8KVCacheDataType::kAuto);               \
+      } else if (SRC_DTYPE == at::ScalarType::BFloat16) {                      \
+        FN(__nv_bfloat16, __nv_bfloat16, vllm::Fp8KVCacheDataType::kAuto);     \
+      } else {                                                                 \
+        TORCH_CHECK(false, "Unsupported input type of kv cache: ", SRC_DTYPE); \
+      }                                                                        \
+    } else {                                                                   \
+      if (KV_DTYPE == "fp8" || KV_DTYPE == "fp8_e4m3" ||                       \
+          KV_DTYPE == "fp8_e5m2" || KV_DTYPE == "fp8_ds_mla") {                \
+        if (SRC_DTYPE == at::ScalarType::Float) {                              \
+          FN(float, uint8_t, vllm::Fp8KVCacheDataType::kFp8E4M3);              \
+        } else if (SRC_DTYPE == at::ScalarType::Half) {                        \
+          FN(uint16_t, uint8_t, vllm::Fp8KVCacheDataType::kFp8E4M3);           \
+        } else if (SRC_DTYPE == at::ScalarType::BFloat16) {                    \
+          FN(__nv_bfloat16, uint8_t, vllm::Fp8KVCacheDataType::kFp8E4M3);      \
+        } else {                                                               \
+          TORCH_CHECK(false,                                                   \
+                      "Unsupported input type of kv cache: ", SRC_DTYPE);      \
+        }                                                                      \
+      } else {                                                                 \
+        TORCH_CHECK(false, "Unsupported data type of kv cache: ", KV_DTYPE);   \
+      }                                                                        \
+    }
 #endif
 
 #ifdef USE_ROCM

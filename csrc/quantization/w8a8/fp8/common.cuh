@@ -5,10 +5,12 @@
 
 #include <cmath>
 
-#ifndef USE_ROCM
-  #include "nvidia/quant_utils.cuh"
-#else
-  #include "amd/quant_utils.cuh"
+#if VLLM_HAS_C10_FLOAT8_HEADERS
+  #ifndef USE_ROCM
+    #include "nvidia/quant_utils.cuh"
+  #else
+    #include "amd/quant_utils.cuh"
+  #endif
 #endif
 
 // Determines the preferred FP8 type for the current platform.
@@ -49,7 +51,9 @@ __device__ __forceinline__ fp8_type scaled_fp8_conversion(float const val,
 
   float r =
       fmaxf(-quant_type_max_v<fp8_type>, fminf(x, quant_type_max_v<fp8_type>));
-#ifndef USE_ROCM
+#if !VLLM_HAS_C10_FLOAT8_HEADERS
+  return static_cast<fp8_type>(r);
+#elif !defined(USE_ROCM)
   // Use hardware cvt instruction for fp8 on nvidia
   // Currently only support fp8_type = c10::Float8_e4m3fn
   return fp8::vec_conversion<fp8_type, float>(r);

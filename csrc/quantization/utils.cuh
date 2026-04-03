@@ -10,16 +10,29 @@
 #include <torch/types.h>
 
 #ifndef USE_ROCM
-  #include <c10/util/Float8_e4m3fn.h>
-  #define MAYBE_HOST_DEVICE C10_HOST_DEVICE
+  #if __has_include(<c10/util/Float8_e4m3fn.h>)
+    #define VLLM_HAS_C10_FLOAT8_HEADERS 1
+    #include <c10/util/Float8_e4m3fn.h>
+    #define MAYBE_HOST_DEVICE C10_HOST_DEVICE
+  #else
+    #define VLLM_HAS_C10_FLOAT8_HEADERS 0
+    #define MAYBE_HOST_DEVICE
+  #endif
 #else
   #include <ATen/hip/HIPContext.h>
-  #include <c10/util/Float8_e4m3fn.h>
-  #include <c10/util/Float8_e4m3fnuz.h>
+  #if __has_include(<c10/util/Float8_e4m3fn.h>) && \
+      __has_include(<c10/util/Float8_e4m3fnuz.h>)
+    #define VLLM_HAS_C10_FLOAT8_HEADERS 1
+    #include <c10/util/Float8_e4m3fn.h>
+    #include <c10/util/Float8_e4m3fnuz.h>
+  #else
+    #define VLLM_HAS_C10_FLOAT8_HEADERS 0
+  #endif
   // ROCm doesn't seem to need C10_HOST_DEVICE for static constexpr
   #define MAYBE_HOST_DEVICE
 #endif
 
+#if VLLM_HAS_C10_FLOAT8_HEADERS
 template <typename T,
           typename = std::enable_if_t<std::is_same_v<T, c10::Float8_e4m3fn> ||
                                       std::is_same_v<T, c10::Float8_e4m3fnuz> ||
@@ -57,3 +70,20 @@ struct min_scaling_factor<int8_t> {
     return std::numeric_limits<float>::epsilon();
   }
 };
+#else
+template <typename T, typename = std::enable_if_t<std::is_same_v<T, int8_t>>>
+struct quant_type_max {
+  static constexpr T val() { return std::numeric_limits<T>::max(); }
+};
+
+template <typename T>
+MAYBE_HOST_DEVICE static constexpr T quant_type_max_v =
+    quant_type_max<T>::val();
+
+template <typename T, typename = std::enable_if_t<std::is_same_v<T, int8_t>>>
+struct min_scaling_factor {
+  C10_DEVICE C10_ALWAYS_INLINE static float val() {
+    return std::numeric_limits<float>::epsilon();
+  }
+};
+#endif

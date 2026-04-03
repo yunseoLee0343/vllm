@@ -9,8 +9,6 @@
 
 #include "quantization/w8a8/fp8/common.cuh"
 
-#include <c10/util/Float8_e4m3fn.h>
-
 #ifndef USE_ROCM
   #include <cuda_bf16.h>
   #include <cuda_fp16.h>
@@ -34,6 +32,7 @@ typedef __hip_fp8x4_e4m3_fnuz __nv_fp8x4_e4m3;
 #endif
 
 #include "core/registration.h"
+#if VLLM_HAS_C10_FLOAT8_HEADERS
 namespace vllm {
 
 template <typename T>
@@ -730,3 +729,17 @@ void persistent_masked_m_silu_mul_quant(
 
 #endif
 }
+
+#else
+void silu_and_mul_quant(torch::Tensor&, torch::Tensor&, torch::Tensor&) {
+  TORCH_CHECK(false, "Float8 quantization is unavailable in this build.");
+}
+
+void persistent_masked_m_silu_mul_quant(const at::Tensor&,
+                                        const at::Tensor&,
+                                        at::Tensor&,
+                                        at::Tensor&,
+                                        bool) {
+  TORCH_CHECK(false, "Float8 quantization is unavailable in this build.");
+}
+#endif
