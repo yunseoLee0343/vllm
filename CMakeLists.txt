@@ -1045,16 +1045,22 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
   # This ensures we only use C-shim APIs available in PyTorch 2.10.
   # _C_stable_libtorch is abi compatible with PyTorch >= TORCH_TARGET_VERSION
   # which is currently set to 2.10.
-  target_compile_definitions(_C_stable_libtorch PRIVATE
-    TORCH_TARGET_VERSION=0x020A000000000000ULL)
+  if(TARGET _C_stable_libtorch)
+    target_compile_definitions(_C_stable_libtorch PRIVATE
+      TORCH_TARGET_VERSION=0x020A000000000000ULL)
+  endif()
 
   # Needed to use cuda APIs from C-shim
-  target_compile_definitions(_C_stable_libtorch PRIVATE
-    USE_CUDA)
+  if(TARGET _C_stable_libtorch)
+    target_compile_definitions(_C_stable_libtorch PRIVATE
+      USE_CUDA)
+  endif()
 
   # Needed by CUTLASS kernels
-  target_compile_definitions(_C_stable_libtorch PRIVATE
-    CUTLASS_ENABLE_DIRECT_CUDA_DRIVER_CALL=1)
+  if(TARGET _C_stable_libtorch)
+    target_compile_definitions(_C_stable_libtorch PRIVATE
+      CUTLASS_ENABLE_DIRECT_CUDA_DRIVER_CALL=1)
+  endif()
 endif()
 
 #
