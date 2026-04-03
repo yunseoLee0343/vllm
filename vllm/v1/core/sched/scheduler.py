@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import itertools
+import logging
 import time
 from collections import defaultdict, deque
 from collections.abc import Iterable
@@ -301,6 +302,7 @@ class Scheduler(SchedulerInterface):
         num_new_tokens: int,
         num_new_local_computed_tokens: int = 0,
         num_external_computed_tokens: int = 0,
+        trace_context: str = "running",
     ) -> int:
         assert num_external_computed_tokens == 0, (
             "External KV connector is not verified yet"
@@ -316,6 +318,10 @@ class Scheduler(SchedulerInterface):
         #                       num_prompt_tokens + num_output_tokens
         #                     )
         # NOTE: Use `request.num_tokens - 1` to bypass normal decoding.
+        original_num_new_tokens = num_new_tokens
+        branch = "skip_outside_prefill"
+        last_cache_position = -1
+        num_computed_tokens_after_sched = -1
         if num_computed_tokens < max(request.num_prompt_tokens, request.num_tokens - 1):
             # To enable block-aligned caching of the Mamba state, `num_new_tokens`
             # must be a multiple of `block_size`.
@@ -332,6 +338,7 @@ class Scheduler(SchedulerInterface):
             num_computed_tokens_after_sched = num_computed_tokens + num_new_tokens
             if num_computed_tokens_after_sched < last_cache_position:
                 # align to block_size
+                branch = "align_floor"
                 num_new_tokens = num_new_tokens // block_size * block_size
             elif (
                 num_computed_tokens
@@ -339,10 +346,28 @@ class Scheduler(SchedulerInterface):
                 < num_computed_tokens_after_sched
             ):
                 # force to cache the last chunk
+                branch = "force_last_chunk"
                 num_new_tokens = last_cache_position - num_computed_tokens
             else:
                 # prefill the last few tokens
+                branch = "pass"
                 pass
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "mamba_align[%s] request=%s computed=%d new_before=%d "
+                "new_after=%d last_cache_position=%d block_size=%d use_eagle=%s "
+                "after_sched=%d branch=%s",
+                trace_context,
+                request.request_id,
+                num_computed_tokens,
+                original_num_new_tokens,
+                num_new_tokens,
+                last_cache_position,
+                self.cache_config.block_size,
+                self.use_eagle,
+                num_computed_tokens_after_sched,
+                branch,
+            )
         return num_new_tokens
 
     def schedule(self) -> SchedulerOutput:
@@ -435,8 +460,22 @@ class Scheduler(SchedulerInterface):
                 )
 
             if self.need_mamba_block_aligned_split:
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "mamba_align[running] step_ts=%.6f request=%s req_index=%d "
+                        "token_budget=%d computed=%d new_before=%d "
+                        "num_tokens_with_spec=%d output_placeholders=%d",
+                        scheduled_timestamp,
+                        request_id,
+                        req_index,
+                        token_budget,
+                        request.num_computed_tokens,
+                        num_new_tokens,
+                        request.num_tokens_with_spec,
+                        request.num_output_placeholders,
+                    )
                 num_new_tokens = self._mamba_block_aligned_split(
-                    request, num_new_tokens
+                    request, num_new_tokens, trace_context="running"
                 )
 
             if num_new_tokens == 0:
@@ -704,6 +743,7 @@ class Scheduler(SchedulerInterface):
                         num_new_tokens,
                         num_new_local_computed_tokens,
                         num_external_computed_tokens,
+                        trace_context="waiting",
                     )
                     if num_new_tokens == 0:
                         break

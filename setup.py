@@ -37,6 +37,16 @@ logger = logging.getLogger(__name__)
 #  which is not installed yet
 envs = load_module_from_path("envs", os.path.join(ROOT_DIR, "vllm", "envs.py"))
 
+# =========================
+# Lightweight build flags
+# =========================
+VLLM_LIGHTWEIGHT_BUILD = os.getenv("VLLM_LIGHTWEIGHT_BUILD", "1") == "1"
+VLLM_FORCE_CUDA_ARCH = os.getenv("VLLM_FORCE_CUDA_ARCH", "8.6")
+VLLM_DISABLE_CUTLASS_FETCH = os.getenv("VLLM_DISABLE_CUTLASS_FETCH", "1") == "1"
+
+if VLLM_LIGHTWEIGHT_BUILD:
+    logger.warning("Using LIGHTWEIGHT BUILD mode (reduced kernels)")
+
 VLLM_TARGET_DEVICE = envs.VLLM_TARGET_DEVICE
 
 if sys.platform.startswith("darwin") and VLLM_TARGET_DEVICE != "cpu":
@@ -960,33 +970,38 @@ if _is_cuda() or _is_hip():
     ext_modules.append(CMakeExtension(name="vllm.cumem_allocator"))
     # Optional since this doesn't get built (produce an .so file). This is just
     # copying the relevant .py files from the source repository.
-    ext_modules.append(CMakeExtension(name="vllm.triton_kernels", optional=True))
+    if not VLLM_LIGHTWEIGHT_BUILD:
+        ext_modules.append(CMakeExtension(name="vllm.triton_kernels", optional=True))
 
 if _is_hip():
     ext_modules.append(CMakeExtension(name="vllm._rocm_C"))
 
 if _is_cuda():
-    ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa2_C"))
+    if not VLLM_LIGHTWEIGHT_BUILD:
+        ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa2_C"))
     if envs.VLLM_USE_PRECOMPILED or (
         CUDA_HOME and get_nvcc_cuda_version() >= Version("12.3")
     ):
         # FA3 requires CUDA 12.3 or later
-        ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa3_C"))
+        if not VLLM_LIGHTWEIGHT_BUILD:
+            ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa3_C"))
     # FA4 CuteDSL - Python-only component for FA4's cute DSL support
     # Optional since this doesn't produce a .so file, just copies Python files
-    ext_modules.append(
-        CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa4_cutedsl_C", optional=True)
-    )
+    if not VLLM_LIGHTWEIGHT_BUILD:
+        ext_modules.append(
+            CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa4_cutedsl_C", optional=True)
+        )
     if envs.VLLM_USE_PRECOMPILED or (
         CUDA_HOME and get_nvcc_cuda_version() >= Version("12.9")
     ):
         # FlashMLA requires CUDA 12.9 or later
         # Optional since this doesn't get built (produce an .so file) when
         # not targeting a hopper system
-        ext_modules.append(CMakeExtension(name="vllm._flashmla_C", optional=True))
-        ext_modules.append(
-            CMakeExtension(name="vllm._flashmla_extension_C", optional=True)
-        )
+        if not VLLM_LIGHTWEIGHT_BUILD:
+            ext_modules.append(CMakeExtension(name="vllm._flashmla_C", optional=True))
+            ext_modules.append(
+                CMakeExtension(name="vllm._flashmla_extension_C", optional=True)
+            )
 
 if _is_cpu():
     import platform
@@ -1002,7 +1017,7 @@ if _build_custom_ops():
     ext_modules.append(CMakeExtension(name="vllm._C"))
     # also _is_hip() once https://github.com/vllm-project/vllm/issues/35163 is
     # fixed
-    if _is_cuda():
+    if _is_cuda() and not VLLM_LIGHTWEIGHT_BUILD:
         ext_modules.append(CMakeExtension(name="vllm._C_stable_libtorch"))
 
 package_data = {

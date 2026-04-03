@@ -22,6 +22,18 @@ set(VLLM_TARGET_DEVICE "cuda" CACHE STRING "Target device backend for vLLM")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "Target device: ${VLLM_TARGET_DEVICE}")
 
+# =========================
+# Custom lightweight build options
+# =========================
+option(VLLM_LIGHTWEIGHT_BUILD "Reduce build scope (disable heavy kernels)" ON)
+set(VLLM_FORCE_CUDA_ARCH "8.6" CACHE STRING "Force single CUDA arch (e.g. 8.6 for A6000)")
+option(VLLM_DISABLE_CUTLASS_FETCH "Disable CUTLASS git clone" ON)
+
+if(VLLM_LIGHTWEIGHT_BUILD)
+  message(STATUS "Lightweight build ENABLED")
+  set(CUDA_ARCHS "${VLLM_FORCE_CUDA_ARCH}")
+endif()
+
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/utils.cmake)
 
 # Suppress potential warnings about unused manually-specified variables
@@ -155,6 +167,10 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
   clear_cuda_arches(CUDA_ARCH_FLAGS)
   extract_unique_cuda_archs_ascending(CUDA_ARCHS "${CUDA_ARCH_FLAGS}")
   message(STATUS "CUDA target architectures: ${CUDA_ARCHS}")
+  if(VLLM_FORCE_CUDA_ARCH)
+    set(CUDA_ARCHS "${VLLM_FORCE_CUDA_ARCH}")
+    message(STATUS "Overriding CUDA arch ${CUDA_ARCHS}")
+  endif()
   # Filter the target architectures by the supported supported archs
   # since for some files we will build for all CUDA_ARCHS.
   cuda_archs_loose_intersection(CUDA_ARCHS
@@ -323,25 +339,45 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
     message(STATUS "The VLLM_CUTLASS_SRC_DIR is set, using ${VLLM_CUTLASS_SRC_DIR} for compilation")
     FetchContent_Declare(cutlass SOURCE_DIR ${VLLM_CUTLASS_SRC_DIR})
   else()
-    FetchContent_Declare(
-        cutlass
-        GIT_REPOSITORY https://github.com/nvidia/cutlass.git
-        # Please keep this in sync with CUTLASS_REVISION line above.
-        GIT_TAG ${CUTLASS_REVISION}
-        GIT_PROGRESS TRUE
+    if(VLLM_DISABLE_CUTLASS_FETCH)
+      message(STATUS "Skipping CUTLASS FetchContent (disabled)")
+      set(CUTLASS_INCLUDE_DIR "")
+      set(CUTLASS_TOOLS_UTIL_INCLUDE_DIR "")
+    else()
+      FetchContent_Declare(
+          cutlass
+          GIT_REPOSITORY https://github.com/nvidia/cutlass.git
+          # Please keep this in sync with CUTLASS_REVISION line above.
+          GIT_TAG ${CUTLASS_REVISION}
+          GIT_PROGRESS TRUE
 
-        # Speed up CUTLASS download by retrieving only the specified GIT_TAG instead of the history.
-        # Important: If GIT_SHALLOW is enabled then GIT_TAG works only with branch names and tags.
-        # So if the GIT_TAG above is updated to a commit hash, GIT_SHALLOW must be set to FALSE
-        GIT_SHALLOW TRUE
-    )
+          # Speed up CUTLASS download by retrieving only the specified GIT_TAG instead of the history.
+          # Important: If GIT_SHALLOW is enabled then GIT_TAG works only with branch names and tags.
+          # So if the GIT_TAG above is updated to a commit hash, GIT_SHALLOW must be set to FALSE
+          GIT_SHALLOW TRUE
+      )
+    endif()
   endif()
-  FetchContent_MakeAvailable(cutlass)
+  if(NOT VLLM_DISABLE_CUTLASS_FETCH)
+    FetchContent_MakeAvailable(cutlass)
+  endif()
 
   list(APPEND VLLM_EXT_SRC
     "csrc/quantization/awq/gemm_kernels.cu"
     "csrc/cutlass_extensions/common.cpp"
     "csrc/quantization/fused_kernels/fused_silu_mul_block_quant.cu")
+
+  # ======================================
+  # Disable heavy kernels in lightweight mode
+  # ======================================
+  if(VLLM_LIGHTWEIGHT_BUILD)
+    message(STATUS "Disabling heavy kernels (Marlin / Machete / MLA / MoE)")
+    set(MARLIN_OTHER_ARCHS "")
+    set(ALLSPARK_ARCHS "")
+    set(MLA_ARCHS "")
+    set(ES_MXFP8_GROUPED_MM_ARCHS "")
+    set(MACHETE_ARCHS "")
+  endif()
 
   set_gencode_flags_for_srcs(
     SRCS "${VLLM_EXT_SRC}"
@@ -990,16 +1026,20 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
   endif()
 
   message(STATUS "Enabling C_stable extension.")
-  define_extension_target(
-    _C_stable_libtorch
-    DESTINATION vllm
-    LANGUAGE ${VLLM_GPU_LANG}
-    SOURCES ${VLLM_STABLE_EXT_SRC}
-    COMPILE_FLAGS ${VLLM_GPU_FLAGS}
-    ARCHITECTURES ${VLLM_GPU_ARCHES}
-    INCLUDE_DIRECTORIES ${CUTLASS_INCLUDE_DIR} ${CUTLASS_TOOLS_UTIL_INCLUDE_DIR}
-    USE_SABI 3
-    WITH_SOABI)
+  if(VLLM_LIGHTWEIGHT_BUILD)
+    message(STATUS "Skipping _C_stable_libtorch (lightweight mode)")
+  else()
+    define_extension_target(
+      _C_stable_libtorch
+      DESTINATION vllm
+      LANGUAGE ${VLLM_GPU_LANG}
+      SOURCES ${VLLM_STABLE_EXT_SRC}
+      COMPILE_FLAGS ${VLLM_GPU_FLAGS}
+      ARCHITECTURES ${VLLM_GPU_ARCHES}
+      INCLUDE_DIRECTORIES ${CUTLASS_INCLUDE_DIR} ${CUTLASS_TOOLS_UTIL_INCLUDE_DIR}
+      USE_SABI 3
+      WITH_SOABI)
+  endif()
 
   # Set TORCH_TARGET_VERSION for stable ABI compatibility.
   # This ensures we only use C-shim APIs available in PyTorch 2.10.
