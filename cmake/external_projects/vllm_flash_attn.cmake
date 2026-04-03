@@ -29,22 +29,26 @@ if (DEFINED ENV{VLLM_FLASH_ATTN_SRC_DIR})
   set(VLLM_FLASH_ATTN_SRC_DIR $ENV{VLLM_FLASH_ATTN_SRC_DIR})
 endif()
 
-if(VLLM_FLASH_ATTN_SRC_DIR)
-  FetchContent_Declare(
-          vllm-flash-attn SOURCE_DIR 
-          ${VLLM_FLASH_ATTN_SRC_DIR}
-          BINARY_DIR ${CMAKE_BINARY_DIR}/vllm-flash-attn
-  )
-else()
-  FetchContent_Declare(
-          vllm-flash-attn
-          GIT_REPOSITORY https://github.com/vllm-project/flash-attention.git
-          GIT_TAG c0ec424fd8a546d0cbbf4bf050bbcfe837c55afb
-          GIT_PROGRESS TRUE
-          # Don't share the vllm-flash-attn build between build types
-          BINARY_DIR ${CMAKE_BINARY_DIR}/vllm-flash-attn
-  )
+if (DEFINED ENV{VLLM_CUTLASS_SRC_DIR})
+  set(CUTLASS_PATH $ENV{VLLM_CUTLASS_SRC_DIR})
 endif()
+
+if(NOT VLLM_FLASH_ATTN_SRC_DIR)
+  message(FATAL_ERROR "vllm-flash-attn must be provided locally. Set VLLM_FLASH_ATTN_SRC_DIR")
+endif()
+if(NOT CUTLASS_PATH)
+  message(FATAL_ERROR "CUTLASS must be provided locally for vllm-flash-attn. Set VLLM_CUTLASS_SRC_DIR")
+endif()
+set(FETCHCONTENT_FULLY_DISCONNECTED ON)
+
+FetchContent_Declare(
+        vllm-flash-attn SOURCE_DIR
+        ${VLLM_FLASH_ATTN_SRC_DIR}
+        BINARY_DIR ${CMAKE_BINARY_DIR}/vllm-flash-attn
+)
+
+# Inject the pre-cloned CUTLASS path into flash-attn and keep the configure offline.
+set(CUTLASS_PATH "${CUTLASS_PATH}" CACHE PATH "Path to local CUTLASS checkout")
 
 # Make sure vllm-flash-attn install rules are nested under vllm/
 # ALL_COMPONENTS ensures the save/modify/restore runs exactly once regardless
