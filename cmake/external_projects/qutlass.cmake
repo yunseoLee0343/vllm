@@ -1,3 +1,4 @@
+#[[
 include(FetchContent)
 
 set(CUTLASS_INCLUDE_DIR "${CUTLASS_INCLUDE_DIR}" CACHE PATH "Path to CUTLASS include/ directory")
@@ -100,3 +101,4 @@ else()
       "CUDA_ARCHS='${CUDA_ARCHS}'.")
   endif()
 endif()
+]]
