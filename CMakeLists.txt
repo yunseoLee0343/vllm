@@ -344,6 +344,8 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
 
   # Set CUTLASS_REVISION. Used for FetchContent. Also fixes some bogus messages when building.
   set(CUTLASS_REVISION "v4.4.2")
+  # Disable all FetchContent network access (offline build)
+  set(FETCHCONTENT_FULLY_DISCONNECTED ON)
 
   # Use the specified CUTLASS source directory for compilation if VLLM_CUTLASS_SRC_DIR is provided
   if (DEFINED ENV{VLLM_CUTLASS_SRC_DIR})
@@ -354,31 +356,12 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
     if(NOT IS_ABSOLUTE VLLM_CUTLASS_SRC_DIR)
       get_filename_component(VLLM_CUTLASS_SRC_DIR "${VLLM_CUTLASS_SRC_DIR}" ABSOLUTE)
     endif()
-    message(STATUS "The VLLM_CUTLASS_SRC_DIR is set, using ${VLLM_CUTLASS_SRC_DIR} for compilation")
+    message(STATUS "[cutlass] Using local path: ${VLLM_CUTLASS_SRC_DIR}")
     FetchContent_Declare(cutlass SOURCE_DIR ${VLLM_CUTLASS_SRC_DIR})
   else()
-    if(VLLM_DISABLE_CUTLASS_FETCH)
-      message(STATUS "Skipping CUTLASS FetchContent (disabled)")
-      set(CUTLASS_INCLUDE_DIR "")
-      set(CUTLASS_TOOLS_UTIL_INCLUDE_DIR "")
-    else()
-      FetchContent_Declare(
-          cutlass
-          GIT_REPOSITORY https://github.com/nvidia/cutlass.git
-          # Please keep this in sync with CUTLASS_REVISION line above.
-          GIT_TAG ${CUTLASS_REVISION}
-          GIT_PROGRESS TRUE
-
-          # Speed up CUTLASS download by retrieving only the specified GIT_TAG instead of the history.
-          # Important: If GIT_SHALLOW is enabled then GIT_TAG works only with branch names and tags.
-          # So if the GIT_TAG above is updated to a commit hash, GIT_SHALLOW must be set to FALSE
-          GIT_SHALLOW TRUE
-      )
-    endif()
+    message(FATAL_ERROR "CUTLASS must be provided locally. Set VLLM_CUTLASS_SRC_DIR")
   endif()
-  if(NOT VLLM_DISABLE_CUTLASS_FETCH)
-    FetchContent_MakeAvailable(cutlass)
-  endif()
+  FetchContent_MakeAvailable(cutlass)
 
   list(APPEND VLLM_EXT_SRC
     "csrc/quantization/awq/gemm_kernels.cu"
