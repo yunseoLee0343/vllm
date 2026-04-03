@@ -1,5 +1,10 @@
 include(FetchContent)
 
+if(VLLM_LIGHTWEIGHT_BUILD)
+  message(STATUS "FlashMLA disabled")
+  return()
+endif()
+
 # If FLASH_MLA_SRC_DIR is set, flash-mla is installed from that directory 
 # instead of downloading.
 # It can be set as an environment variable or passed as a cmake argument.
@@ -16,14 +21,7 @@ if(FLASH_MLA_SRC_DIR)
         BUILD_COMMAND ""
   )
 else()
-  FetchContent_Declare(
-        flashmla
-        GIT_REPOSITORY https://github.com/vllm-project/FlashMLA
-        GIT_TAG 692917b1cda61b93ac9ee2d846ec54e75afe87b1
-        GIT_PROGRESS TRUE
-        CONFIGURE_COMMAND ""
-        BUILD_COMMAND ""
-  )
+  message(FATAL_ERROR "FlashMLA must be provided locally")
 endif()
 
 
