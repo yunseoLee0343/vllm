@@ -881,7 +881,7 @@ class Scheduler(SchedulerInterface):
             self._mamba_sched_iteration += 1
             if not mamba_launched:
                 self._mamba_no_launch_iteration_count += 1
-            if self._mamba_sched_iteration % 100 == 0:
+            if self._mamba_sched_iteration % 500 == 0:
                 logger.info(
                     "[MAMBA TRACE] iter=%d zero_progress=%d "
                     "no_launch_iter=%d scheduled_tokens=%d reason=%s",
