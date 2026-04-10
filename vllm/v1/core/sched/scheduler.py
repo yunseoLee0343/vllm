@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import itertools
+import os
 import time
 from collections import defaultdict, deque
 from collections.abc import Iterable
@@ -252,6 +253,12 @@ class Scheduler(SchedulerInterface):
         self.need_mamba_block_aligned_split = (
             self.has_mamba_layers and self.cache_config.mamba_cache_mode == "align"
         )
+        self._mamba_relax_tail = os.getenv("MAMBA_RELAX_TAIL", "0") == "1"
+        self._schedule_iter_count = 0
+        self.mamba_stats: dict[str, Any] = {
+            "zero_progress_by_reason": defaultdict(int),
+            "no_launch_iteration_count": 0,
+        }
         self.perf_metrics: ModelMetrics | None = None
         if self.log_stats and vllm_config.observability_config.enable_mfu_metrics:
             self.perf_metrics = ModelMetrics(vllm_config)
@@ -301,7 +308,7 @@ class Scheduler(SchedulerInterface):
         num_new_tokens: int,
         num_new_local_computed_tokens: int = 0,
         num_external_computed_tokens: int = 0,
-    ) -> int:
+    ) -> tuple[int, str]:
         assert num_external_computed_tokens == 0, (
             "External KV connector is not verified yet"
         )
@@ -330,22 +337,32 @@ class Scheduler(SchedulerInterface):
             if self.use_eagle:
                 last_cache_position = max(last_cache_position - block_size, 0)
             num_computed_tokens_after_sched = num_computed_tokens + num_new_tokens
+            aligned_tokens = num_new_tokens
             if num_computed_tokens_after_sched < last_cache_position:
                 # align to block_size
-                num_new_tokens = num_new_tokens // block_size * block_size
+                aligned_tokens = num_new_tokens // block_size * block_size
             elif (
                 num_computed_tokens
                 < last_cache_position
                 < num_computed_tokens_after_sched
             ):
                 # force to cache the last chunk
-                num_new_tokens = last_cache_position - num_computed_tokens
+                aligned_tokens = last_cache_position - num_computed_tokens
             else:
                 # prefill the last few tokens
                 pass
-        return num_new_tokens
+            if aligned_tokens == 0 and num_new_tokens > 0:
+                if self._mamba_relax_tail:
+                    request._has_uncached_tail = True
+                    return num_new_tokens, "relaxed_tail"
+                return 0, "alignment_reject"
+            if aligned_tokens < num_new_tokens:
+                request._has_uncached_tail = True
+            return aligned_tokens, "aligned"
+        return num_new_tokens, "aligned"
 
     def schedule(self) -> SchedulerOutput:
+        self._schedule_iter_count += 1
         # NOTE(woosuk) on the scheduling algorithm:
         # There's no "decoding phase" nor "prefill phase" in the scheduler.
         # Each request just has the num_computed_tokens and
@@ -434,12 +451,17 @@ class Scheduler(SchedulerInterface):
                     shift_computed_tokens=1 if self.use_eagle else 0,
                 )
 
+            mamba_split_reason = "aligned"
             if self.need_mamba_block_aligned_split:
-                num_new_tokens = self._mamba_block_aligned_split(
-                    request, num_new_tokens
+                num_new_tokens, mamba_split_reason = (
+                    self._mamba_block_aligned_split(request, num_new_tokens)
                 )
 
             if num_new_tokens == 0:
+                if self.need_mamba_block_aligned_split:
+                    self.mamba_stats["zero_progress_by_reason"][
+                        mamba_split_reason
+                    ] += 1
                 # The request cannot be scheduled because one of the following
                 # reasons:
                 # 1. No new tokens to schedule. This may happen when
@@ -698,14 +720,20 @@ class Scheduler(SchedulerInterface):
                             # The request cannot be scheduled.
                             break
 
+                mamba_split_reason = "aligned"
                 if self.need_mamba_block_aligned_split:
-                    num_new_tokens = self._mamba_block_aligned_split(
-                        request,
-                        num_new_tokens,
-                        num_new_local_computed_tokens,
-                        num_external_computed_tokens,
+                    num_new_tokens, mamba_split_reason = (
+                        self._mamba_block_aligned_split(
+                            request,
+                            num_new_tokens,
+                            num_new_local_computed_tokens,
+                            num_external_computed_tokens,
+                        )
                     )
                     if num_new_tokens == 0:
+                        self.mamba_stats["zero_progress_by_reason"][
+                            mamba_split_reason
+                        ] += 1
                         break
 
                 # Handles an edge case when P/D Disaggregation
@@ -943,6 +971,17 @@ class Scheduler(SchedulerInterface):
                 scheduler_output
             )
             scheduler_output.ec_connector_metadata = ec_meta
+
+        if self.need_mamba_block_aligned_split:
+            if scheduler_output.total_num_scheduled_tokens == 0:
+                self.mamba_stats["no_launch_iteration_count"] += 1
+            if self._schedule_iter_count % 100 == 0:
+                logger.info(
+                    "[MAMBA TRACE] iters=%d no_launch=%d zero_progress=%s",
+                    self._schedule_iter_count,
+                    self.mamba_stats["no_launch_iteration_count"],
+                    dict(self.mamba_stats["zero_progress_by_reason"]),
+                )
 
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)

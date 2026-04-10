@@ -151,6 +151,9 @@ class Request:
 
         # True if this request is scheduled as a non-final prefill chunk.
         self.is_prefill_chunk = False
+        # True when a mamba sub-block tail has progressed but has not been
+        # persisted to an aligned cache block yet.
+        self._has_uncached_tail = False
 
         # The number of NaNs in logits. A value greater than 0
         # indicates that the output is corrupted
