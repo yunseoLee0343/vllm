@@ -49,7 +49,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--model",
-        default=os.getenv("MAMBA_BENCH_MODEL", "state-spaces/mamba-130m-hf"),
+        default=os.getenv("MAMBA_BENCH_MODEL", "Qwen/Qwen3.5-0.5B-Instruct"),
     )
     parser.add_argument("--max-model-len", type=int, default=2048)
     parser.add_argument("--max-tokens", type=int, default=32)
