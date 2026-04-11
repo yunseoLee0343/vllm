@@ -4,6 +4,8 @@
 # Copyright (c) 2024, Tri Dao, Albert Gu.
 # Adapted from https://github.com/state-spaces/mamba/blob/v2.2.4/mamba_ssm/ops/triton/selective_state_update.py
 
+import os
+
 import torch
 from packaging import version
 
@@ -628,6 +630,10 @@ def selective_scan_fn(
         C = C.unsqueeze(1)
     if C.dim() == 2 and query_start_loc is not None:
         C = C.unsqueeze(0)
+
+    if os.getenv("MAMBA_TRACE_KERNEL", "0") == "1":
+        chunk_tokens = u.shape[-1]
+        print(f"[KERNEL] selective_scan launch tokens={chunk_tokens}", flush=True)
 
     ops.selective_scan_fwd(
         u,

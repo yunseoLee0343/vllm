@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import itertools
+import os
 import time
 from collections import defaultdict, deque
 from collections.abc import Iterable
@@ -252,6 +253,13 @@ class Scheduler(SchedulerInterface):
         self.need_mamba_block_aligned_split = (
             self.has_mamba_layers and self.cache_config.mamba_cache_mode == "align"
         )
+        self._mamba_sched_iteration = 0
+        self._mamba_zero_progress_count = 0
+        self._mamba_zero_progress_by_reason: defaultdict[str, int] = defaultdict(int)
+        self._mamba_no_launch_iteration_count = 0
+        self._mamba_scheduled_tokens_total = 0
+        self._trace_ttft = os.getenv("VLLM_TRACE_TTFT", "0") == "1"
+        self._ttft_first_progress_logged: set[str] = set()
         self.perf_metrics: ModelMetrics | None = None
         if self.log_stats and vllm_config.observability_config.enable_mfu_metrics:
             self.perf_metrics = ModelMetrics(vllm_config)
@@ -301,10 +309,11 @@ class Scheduler(SchedulerInterface):
         num_new_tokens: int,
         num_new_local_computed_tokens: int = 0,
         num_external_computed_tokens: int = 0,
-    ) -> int:
+    ) -> tuple[int, str]:
         assert num_external_computed_tokens == 0, (
             "External KV connector is not verified yet"
         )
+        original_num_new_tokens = num_new_tokens
         num_computed_tokens = (
             request.num_computed_tokens
             + num_new_local_computed_tokens
@@ -343,7 +352,12 @@ class Scheduler(SchedulerInterface):
             else:
                 # prefill the last few tokens
                 pass
-        return num_new_tokens
+        if num_new_tokens == 0:
+            if os.getenv("MAMBA_RELAX_TAIL", "0") == "1":
+                tail_tokens = original_num_new_tokens % self.cache_config.block_size
+                return max(tail_tokens, 1), "relaxed_tail"
+            return 0, "alignment_reject"
+        return num_new_tokens, "aligned"
 
     def schedule(self) -> SchedulerOutput:
         # NOTE(woosuk) on the scheduling algorithm:
@@ -379,6 +393,7 @@ class Scheduler(SchedulerInterface):
         scheduled_timestamp = time.monotonic()
 
         self.kv_cache_manager.new_step_starts()
+        mamba_launched = False
 
         # First, schedule the RUNNING requests.
         req_index = 0
@@ -435,7 +450,7 @@ class Scheduler(SchedulerInterface):
                 )
 
             if self.need_mamba_block_aligned_split:
-                num_new_tokens = self._mamba_block_aligned_split(
+                num_new_tokens, split_reason = self._mamba_block_aligned_split(
                     request, num_new_tokens
                 )
 
@@ -454,6 +469,9 @@ class Scheduler(SchedulerInterface):
                 # NOTE(woosuk): Here, by doing `continue` instead of `break`,
                 # we do not strictly follow the FCFS scheduling policy and
                 # allow the lower-priority requests to be scheduled.
+                if self.need_mamba_block_aligned_split:
+                    self._mamba_zero_progress_count += 1
+                    self._mamba_zero_progress_by_reason[split_reason] += 1
                 req_index += 1
                 continue
 
@@ -515,6 +533,22 @@ class Scheduler(SchedulerInterface):
             req_to_new_blocks[request_id] = new_blocks
             num_scheduled_tokens[request_id] = num_new_tokens
             token_budget -= num_new_tokens
+            if (
+                self._trace_ttft
+                and request_id not in self._ttft_first_progress_logged
+                and num_new_tokens > 0
+            ):
+                self._ttft_first_progress_logged.add(request_id)
+                logger.info(
+                    "[TTFT_TRACE] stage=scheduler_first_progress request_id=%s "
+                    "t=%.6f num_new_tokens=%d",
+                    request_id,
+                    time.perf_counter(),
+                    num_new_tokens,
+                )
+            mamba_launched = True
+            if self.need_mamba_block_aligned_split:
+                self._mamba_scheduled_tokens_total += num_new_tokens
             req_index += 1
 
             # Speculative decode related.
@@ -699,13 +733,15 @@ class Scheduler(SchedulerInterface):
                             break
 
                 if self.need_mamba_block_aligned_split:
-                    num_new_tokens = self._mamba_block_aligned_split(
+                    num_new_tokens, split_reason = self._mamba_block_aligned_split(
                         request,
                         num_new_tokens,
                         num_new_local_computed_tokens,
                         num_external_computed_tokens,
                     )
                     if num_new_tokens == 0:
+                        self._mamba_zero_progress_count += 1
+                        self._mamba_zero_progress_by_reason[split_reason] += 1
                         break
 
                 # Handles an edge case when P/D Disaggregation
@@ -824,6 +860,22 @@ class Scheduler(SchedulerInterface):
                 )
                 num_scheduled_tokens[request_id] = num_new_tokens
                 token_budget -= num_new_tokens
+                if (
+                    self._trace_ttft
+                    and request_id not in self._ttft_first_progress_logged
+                    and num_new_tokens > 0
+                ):
+                    self._ttft_first_progress_logged.add(request_id)
+                    logger.info(
+                        "[TTFT_TRACE] stage=scheduler_first_progress request_id=%s "
+                        "t=%.6f num_new_tokens=%d",
+                        request_id,
+                        time.perf_counter(),
+                        num_new_tokens,
+                    )
+                mamba_launched = True
+                if self.need_mamba_block_aligned_split:
+                    self._mamba_scheduled_tokens_total += num_new_tokens
                 request.status = RequestStatus.RUNNING
                 request.num_computed_tokens = num_computed_tokens
                 # Count the number of prefix cached tokens.
@@ -852,6 +904,21 @@ class Scheduler(SchedulerInterface):
         # Check if the scheduling constraints are satisfied.
         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
         assert total_num_scheduled_tokens <= self.max_num_scheduled_tokens
+
+        if self.need_mamba_block_aligned_split:
+            self._mamba_sched_iteration += 1
+            if not mamba_launched:
+                self._mamba_no_launch_iteration_count += 1
+            if self._mamba_sched_iteration % 500 == 0:
+                logger.info(
+                    "[MAMBA TRACE] iter=%d zero_progress=%d "
+                    "no_launch_iter=%d scheduled_tokens=%d reason=%s",
+                    self._mamba_sched_iteration,
+                    self._mamba_zero_progress_count,
+                    self._mamba_no_launch_iteration_count,
+                    self._mamba_scheduled_tokens_total,
+                    dict(self._mamba_zero_progress_by_reason),
+                )
 
         assert token_budget >= 0
         assert len(self.running) <= self.max_num_running_reqs
@@ -1564,6 +1631,12 @@ class Scheduler(SchedulerInterface):
         )
 
     def _enqueue_waiting_request(self, request: Request) -> None:
+        if self._trace_ttft:
+            logger.info(
+                "[TTFT_TRACE] stage=scheduler_waiting_enqueue request_id=%s t=%.6f",
+                request.request_id,
+                time.perf_counter(),
+            )
         if self._is_blocked_waiting_status(request.status):
             self.skipped_waiting.add_request(request)
         else:
