@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export MAMBA_BENCH_MODEL="${MAMBA_BENCH_MODEL:-Qwen/Qwen3.5-0.5B-Instruct}"
+export MAMBA_BENCH_MODEL="${MAMBA_BENCH_MODEL:-Qwen/Qwen3.5-4B}"
 
 echo "=== BASELINE ==="
 export MAMBA_RELAX_TAIL=0
