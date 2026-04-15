@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 from vllm.lora.request import LoRARequest
+from vllm.logger import init_logger
 from vllm.outputs import (
     STREAM_FINISHED,
     CompletionOutput,
@@ -31,12 +32,15 @@ from vllm.v1.engine import EngineCoreOutput, EngineCoreRequest, FinishReason
 from vllm.v1.engine.detokenizer import IncrementalDetokenizer
 from vllm.v1.engine.logprobs import LogprobsProcessor
 from vllm.v1.engine.parallel_sampling import ParentRequest
+from vllm.v1.engine.ttft_trace import is_ttft_trace_enabled, log_ttft_trace
 from vllm.v1.metrics.stats import (
     IterationStats,
     LoRARequestStates,
     RequestStateStats,
     SchedulerStats,
 )
+
+logger = init_logger(__name__)
 
 # shared empty CPU tensor used as a placeholder pooling output
 EMPTY_CPU_TENSOR = torch.empty(0, device="cpu")
@@ -429,6 +433,8 @@ class OutputProcessor:
         self.external_req_ids: defaultdict[str, list[str]] = defaultdict(list)
         self.lora_states = LoRARequestStates(log_stats)
         self.tracing_enabled = tracing_enabled
+        self.trace_ttft = is_ttft_trace_enabled()
+        self._ttft_first_output_logged: set[str] = set()
 
     def get_num_unfinished_requests(self):
         return len(self.request_states)
@@ -648,9 +654,26 @@ class OutputProcessor:
                     request_output.finished = False
 
                 if req_state.queue is not None:
+                    if self.trace_ttft and req_id not in self._ttft_first_output_logged:
+                        self._ttft_first_output_logged.add(req_id)
+                        # This is the earliest practical user-visible boundary:
+                        # we emit right before handing RequestOutput to the
+                        # frontend queue consumed by generate().
+                        log_ttft_trace(
+                            logger,
+                            stage="output_first_emit",
+                            request_id=req_id,
+                        )
                     # AsyncLLM: put into queue for handling by generate().
                     req_state.queue.put(request_output)
                 else:
+                    if self.trace_ttft and req_id not in self._ttft_first_output_logged:
+                        self._ttft_first_output_logged.add(req_id)
+                        log_ttft_trace(
+                            logger,
+                            stage="output_first_emit",
+                            request_id=req_id,
+                        )
                     # LLMEngine: return list of RequestOutputs.
                     request_outputs.append(request_output)
 

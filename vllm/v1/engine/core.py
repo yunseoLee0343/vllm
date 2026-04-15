@@ -60,6 +60,7 @@ from vllm.v1.engine import (
     UtilityOutput,
     UtilityResult,
 )
+from vllm.v1.engine.ttft_trace import is_ttft_trace_enabled, log_ttft_trace
 from vllm.v1.engine.tensor_ipc import TensorIpcReceiver
 from vllm.v1.engine.utils import (
     EngineHandshakeMetadata,
@@ -321,6 +322,14 @@ class EngineCore:
                 "Disabling KVTransfer for this request."
             )
 
+        if is_ttft_trace_enabled():
+            # Prefer same-process deltas with `t`; use `wall_ns` for
+            # cross-process joins.
+            log_ttft_trace(
+                logger,
+                stage="engine_before_scheduler_add",
+                request_id=request.request_id,
+            )
         self.scheduler.add_request(request)
 
     def abort_requests(self, request_ids: list[str]):
@@ -746,6 +755,12 @@ class EngineCore:
         if self.mm_receiver_cache is not None and request.mm_features:
             request.mm_features = self.mm_receiver_cache.get_and_update_features(
                 request.mm_features
+            )
+        if is_ttft_trace_enabled():
+            log_ttft_trace(
+                logger,
+                stage="engine_preprocess",
+                request_id=request.request_id,
             )
 
         req = Request.from_engine_core_request(request, self.request_block_hasher)

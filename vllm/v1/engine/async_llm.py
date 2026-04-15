@@ -44,6 +44,7 @@ from vllm.v1.engine.exceptions import EngineDeadError, EngineGenerateError
 from vllm.v1.engine.input_processor import InputProcessor
 from vllm.v1.engine.output_processor import OutputProcessor, RequestOutputCollector
 from vllm.v1.engine.parallel_sampling import ParentRequest
+from vllm.v1.engine.ttft_trace import is_ttft_trace_enabled, log_ttft_trace
 from vllm.v1.executor import Executor
 from vllm.v1.metrics.loggers import (
     StatLoggerFactory,
@@ -119,6 +120,7 @@ class AsyncLLM(EngineClient):
             init_tracer("vllm.llm_engine", tracing_endpoint)
 
         self.log_requests = log_requests
+        self.trace_ttft = is_ttft_trace_enabled()
 
         custom_stat_loggers = list(stat_loggers or [])
         custom_stat_loggers.extend(load_stat_logger_plugin_factories())
@@ -304,6 +306,13 @@ class AsyncLLM(EngineClient):
     ) -> RequestOutputCollector:
         """Add new request to the AsyncLLM."""
 
+        if self.trace_ttft:
+            # Prefer same-process deltas with `t`; use `wall_ns` for
+            # cross-process joins.
+            log_ttft_trace(
+                logger, stage="frontend_add_request_entry", request_id=request_id
+            )
+
         if self.errored:
             raise EngineDeadError()
 
@@ -414,6 +423,12 @@ class AsyncLLM(EngineClient):
         self.output_processor.add_request(request, prompt, parent_req, index, queue)
 
         # Add the EngineCoreRequest to EngineCore (separate process).
+        if self.trace_ttft:
+            log_ttft_trace(
+                logger,
+                stage="frontend_before_enginecore_add",
+                request_id=request.request_id,
+            )
         await self.engine_core.add_request_async(request)
 
         if self.log_requests:
