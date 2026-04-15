@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import os
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from collections.abc import Sequence as GenericSequence
@@ -213,6 +214,19 @@ class OpenAIServingChat(OpenAIServing):
         for the API specification. This API mimics the OpenAI
         Chat Completion API.
         """
+        request_id = (
+            f"chatcmpl-{self._base_request_id(raw_request, request.request_id)}"
+        )
+        trace_ttft = os.getenv("VLLM_TRACE_TTFT", "0") == "1"
+        if trace_ttft:
+            logger.info(
+                "[TTFT_TRACE] stage=api_ingress parent_request_id=%s "
+                "request_id=%s t=%.6f",
+                request_id,
+                request_id,
+                time.perf_counter(),
+            )
+
         # Streaming response
         tokenizer = self.renderer.tokenizer
         assert tokenizer is not None
@@ -232,10 +246,6 @@ class OpenAIServingChat(OpenAIServing):
             return result
 
         conversation, engine_inputs = result
-
-        request_id = (
-            f"chatcmpl-{self._base_request_id(raw_request, request.request_id)}"
-        )
 
         request_metadata = RequestResponseMetadata(request_id=request_id)
         if raw_request:
@@ -259,6 +269,14 @@ class OpenAIServingChat(OpenAIServing):
             sub_request_id = (
                 request_id if len(engine_inputs) == 1 else f"{request_id}_{i}"
             )
+            if trace_ttft:
+                logger.info(
+                    "[TTFT_TRACE] stage=request_id_map parent_request_id=%s "
+                    "request_id=%s t=%.6f",
+                    request_id,
+                    sub_request_id,
+                    time.perf_counter(),
+                )
 
             max_tokens = get_max_tokens(
                 max_model_len,
@@ -312,6 +330,14 @@ class OpenAIServingChat(OpenAIServing):
                 else:
                     reasoning_ended = None
 
+                if trace_ttft:
+                    logger.info(
+                        "[TTFT_TRACE] stage=before_engine_handoff "
+                        "parent_request_id=%s request_id=%s t=%.6f",
+                        request_id,
+                        sub_request_id,
+                        time.perf_counter(),
+                    )
                 generator = self.engine_client.generate(
                     engine_input,
                     sampling_params,
