@@ -307,9 +307,12 @@ class AsyncLLM(EngineClient):
 
         if self.trace_ttft:
             logger.info(
-                "[TTFT_TRACE] stage=async_add_request_entry request_id=%s t=%.6f",
+                "[TTFT_TRACE] stage=async_add_request_entry request_id=%s "
+                "t=%.6f pid=%d wall_ns=%d",
                 request_id,
                 time.perf_counter(),
+                os.getpid(),
+                time.time_ns(),
             )
 
         if self.errored:
@@ -425,9 +428,11 @@ class AsyncLLM(EngineClient):
         if self.trace_ttft:
             logger.info(
                 "[TTFT_TRACE] stage=async_before_enginecore_add request_id=%s "
-                "t=%.6f",
+                "t=%.6f pid=%d wall_ns=%d",
                 request.request_id,
                 time.perf_counter(),
+                os.getpid(),
+                time.time_ns(),
             )
         await self.engine_core.add_request_async(request)
 

@@ -659,9 +659,11 @@ class OutputProcessor:
                         self._ttft_first_output_logged.add(req_id)
                         logger.info(
                             "[TTFT_TRACE] stage=first_output_emitted "
-                            "request_id=%s t=%.6f",
+                            "request_id=%s t=%.6f pid=%d wall_ns=%d",
                             req_id,
                             time.perf_counter(),
+                            os.getpid(),
+                            time.time_ns(),
                         )
                     # AsyncLLM: put into queue for handling by generate().
                     req_state.queue.put(request_output)
@@ -670,9 +672,11 @@ class OutputProcessor:
                         self._ttft_first_output_logged.add(req_id)
                         logger.info(
                             "[TTFT_TRACE] stage=first_output_emitted "
-                            "request_id=%s t=%.6f",
+                            "request_id=%s t=%.6f pid=%d wall_ns=%d",
                             req_id,
                             time.perf_counter(),
+                            os.getpid(),
+                            time.time_ns(),
                         )
                     # LLMEngine: return list of RequestOutputs.
                     request_outputs.append(request_output)

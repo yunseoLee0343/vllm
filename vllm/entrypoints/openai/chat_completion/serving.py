@@ -218,13 +218,18 @@ class OpenAIServingChat(OpenAIServing):
             f"chatcmpl-{self._base_request_id(raw_request, request.request_id)}"
         )
         trace_ttft = os.getenv("VLLM_TRACE_TTFT", "0") == "1"
+        # Trace contract:
+        # - Prefer same-process deltas using `t` (perf_counter).
+        # - For cross-process joins, use `wall_ns` + request_id mapping.
         if trace_ttft:
             logger.info(
                 "[TTFT_TRACE] stage=api_ingress parent_request_id=%s "
-                "request_id=%s t=%.6f",
+                "request_id=%s t=%.6f pid=%d wall_ns=%d",
                 request_id,
                 request_id,
                 time.perf_counter(),
+                os.getpid(),
+                time.time_ns(),
             )
 
         # Streaming response
@@ -272,10 +277,12 @@ class OpenAIServingChat(OpenAIServing):
             if trace_ttft:
                 logger.info(
                     "[TTFT_TRACE] stage=request_id_map parent_request_id=%s "
-                    "request_id=%s t=%.6f",
+                    "request_id=%s t=%.6f pid=%d wall_ns=%d",
                     request_id,
                     sub_request_id,
                     time.perf_counter(),
+                    os.getpid(),
+                    time.time_ns(),
                 )
 
             max_tokens = get_max_tokens(
@@ -333,10 +340,13 @@ class OpenAIServingChat(OpenAIServing):
                 if trace_ttft:
                     logger.info(
                         "[TTFT_TRACE] stage=before_engine_handoff "
-                        "parent_request_id=%s request_id=%s t=%.6f",
+                        "parent_request_id=%s request_id=%s t=%.6f "
+                        "pid=%d wall_ns=%d",
                         request_id,
                         sub_request_id,
                         time.perf_counter(),
+                        os.getpid(),
+                        time.time_ns(),
                     )
                 generator = self.engine_client.generate(
                     engine_input,

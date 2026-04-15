@@ -541,9 +541,11 @@ class Scheduler(SchedulerInterface):
                 self._ttft_first_progress_logged.add(request_id)
                 logger.info(
                     "[TTFT_TRACE] stage=scheduler_first_progress request_id=%s "
-                    "t=%.6f num_new_tokens=%d",
+                    "t=%.6f pid=%d wall_ns=%d num_new_tokens=%d",
                     request_id,
                     time.perf_counter(),
+                    os.getpid(),
+                    time.time_ns(),
                     num_new_tokens,
                 )
             mamba_launched = True
@@ -868,9 +870,11 @@ class Scheduler(SchedulerInterface):
                     self._ttft_first_progress_logged.add(request_id)
                     logger.info(
                         "[TTFT_TRACE] stage=scheduler_first_progress request_id=%s "
-                        "t=%.6f num_new_tokens=%d",
+                        "t=%.6f pid=%d wall_ns=%d num_new_tokens=%d",
                         request_id,
                         time.perf_counter(),
+                        os.getpid(),
+                        time.time_ns(),
                         num_new_tokens,
                     )
                 mamba_launched = True
@@ -1633,9 +1637,12 @@ class Scheduler(SchedulerInterface):
     def _enqueue_waiting_request(self, request: Request) -> None:
         if self._trace_ttft:
             logger.info(
-                "[TTFT_TRACE] stage=scheduler_waiting_enqueue request_id=%s t=%.6f",
+                "[TTFT_TRACE] stage=scheduler_waiting_enqueue request_id=%s "
+                "t=%.6f pid=%d wall_ns=%d",
                 request.request_id,
                 time.perf_counter(),
+                os.getpid(),
+                time.time_ns(),
             )
         if self._is_blocked_waiting_status(request.status):
             self.skipped_waiting.add_request(request)

@@ -6,6 +6,8 @@ Note:
     OpenAI serving stack. Therefore, TTFT trace stages emitted from OpenAI
     handlers (e.g. ``api_ingress`` and ``before_engine_handoff``) are not
     expected here. Scheduler/engine-side trace stages remain valid.
+    For interpretation, prefer same-process deltas using ``t`` (perf_counter).
+    Cross-process deltas are diagnostic estimates unless aligned by ``wall_ns``.
 """
 
 from __future__ import annotations
@@ -58,7 +60,8 @@ def main() -> None:
     print(
         "trace_note=offline LLM.generate path: OpenAI api_ingress/"
         "before_engine_handoff traces are not expected; scheduler/engine traces "
-        "still apply"
+        "still apply; use same-process t deltas, use wall_ns for cross-process "
+        "alignment"
     )
 
     llm = LLM(model=args.model, max_model_len=args.max_model_len)

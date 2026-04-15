@@ -324,9 +324,11 @@ class EngineCore:
         if os.getenv("VLLM_TRACE_TTFT", "0") == "1":
             logger.info(
                 "[TTFT_TRACE] stage=engine_core_add_to_scheduler request_id=%s "
-                "t=%.6f",
+                "t=%.6f pid=%d wall_ns=%d",
                 request.request_id,
                 time.perf_counter(),
+                os.getpid(),
+                time.time_ns(),
             )
         self.scheduler.add_request(request)
 
@@ -756,9 +758,12 @@ class EngineCore:
             )
         if os.getenv("VLLM_TRACE_TTFT", "0") == "1":
             logger.info(
-                "[TTFT_TRACE] stage=engine_core_preprocess request_id=%s t=%.6f",
+                "[TTFT_TRACE] stage=engine_core_preprocess request_id=%s "
+                "t=%.6f pid=%d wall_ns=%d",
                 request.request_id,
                 time.perf_counter(),
+                os.getpid(),
+                time.time_ns(),
             )
 
         req = Request.from_engine_core_request(request, self.request_block_hasher)
