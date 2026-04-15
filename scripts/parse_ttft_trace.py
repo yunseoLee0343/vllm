@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Parse TTFT_TRACE logs and print compact per-request timing table."""
+"""Parse TTFT_TRACE logs and print compact per-request timing table.
+
+Parser contract: TTFT trace values are expected to be whitespace-free
+`key=value` tokens.
+"""
 
 from __future__ import annotations
 
@@ -88,7 +92,7 @@ def main() -> None:
 
     print(
         "request_id\tstall_wait_to_progress_ms\tprogress_to_first_emit_ms"
-        "\te2e_to_first_emit_ms(best_effort)"
+        "\te2e_to_first_emit_ms(best_effort)\tstatus"
     )
     for req_id in sorted(by_req):
         stages = by_req[req_id]
@@ -111,7 +115,29 @@ def main() -> None:
                         break
 
         e2e = choose_delta_ms(ingress, stages.get("output_first_emit"))
-        print(f"{req_id}\t{stall}\t{emit}\t{e2e}")
+        status_flags: list[str] = []
+        if ingress is None:
+            if stages.get("scheduler_waiting_enqueue") or stages.get(
+                "frontend_add_request_entry"
+            ):
+                status_flags.append("no_api_ingress(path_diff)")
+            else:
+                status_flags.append("no_api_ingress")
+        if (
+            stages.get("scheduler_waiting_enqueue") is None
+            and stages.get("scheduler_first_progress") is None
+        ):
+            status_flags.append("no_scheduler_stages")
+        elif (
+            stages.get("scheduler_waiting_enqueue") is None
+            or stages.get("scheduler_first_progress") is None
+        ):
+            status_flags.append("partial_scheduler_stages")
+        if stages.get("output_first_emit") is None:
+            status_flags.append("no_first_emit")
+        status = ",".join(status_flags) if status_flags else "ok"
+
+        print(f"{req_id}\t{stall}\t{emit}\t{e2e}\t{status}")
 
 
 if __name__ == "__main__":

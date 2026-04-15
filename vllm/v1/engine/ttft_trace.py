@@ -24,6 +24,9 @@ def log_ttft_trace(
     Field order is stable to simplify parsing:
     stage, request_id, parent_request_id (if applicable), t, pid, wall_ns,
     then any caller-provided extra fields.
+
+    Trace values should remain whitespace-free (`key=value` tokens) so simple
+    whitespace-based parsers can consume logs reliably.
     """
     fields = [f"[TTFT_TRACE] stage={stage}", f"request_id={request_id}"]
     if parent_request_id is not None:
@@ -32,6 +35,6 @@ def log_ttft_trace(
     fields.append(f"pid={os.getpid()}")
     fields.append(f"wall_ns={time.time_ns()}")
     if extra_fields:
-        for key, value in extra_fields.items():
+        for key, value in sorted(extra_fields.items()):
             fields.append(f"{key}={value}")
     logger.info(" ".join(fields))
