@@ -80,6 +80,7 @@ from vllm.tool_parsers.mistral_tool_parser import (
 from vllm.tool_parsers.utils import partial_json_loads
 from vllm.utils.collection_utils import as_list
 from vllm.utils.mistral import is_mistral_tokenizer
+from vllm.v1.engine.ttft_trace import is_ttft_trace_enabled, log_ttft_trace
 
 if TYPE_CHECKING:
     from vllm.entrypoints.serve.render.serving import OpenAIServingRender
@@ -228,6 +229,21 @@ class OpenAIServingChat(OpenAIServing):
         for the API specification. This API mimics the OpenAI
         Chat Completion API.
         """
+        request_id = (
+            f"chatcmpl-{self._base_request_id(raw_request, request.request_id)}"
+        )
+        trace_ttft = is_ttft_trace_enabled()
+        # Trace contract:
+        # - Prefer same-process deltas using `t` (perf_counter).
+        # - For cross-process joins, use `wall_ns` + request_id mapping.
+        if trace_ttft:
+            log_ttft_trace(
+                logger,
+                stage="api_ingress",
+                request_id,
+                parent_request_id=request_id,
+            )
+
         # Streaming response
         tokenizer = self.renderer.tokenizer
         assert tokenizer is not None
@@ -246,10 +262,6 @@ class OpenAIServingChat(OpenAIServing):
             return result
 
         conversation, engine_inputs = result
-
-        request_id = (
-            f"chatcmpl-{self._base_request_id(raw_request, request.request_id)}"
-        )
 
         request_metadata = RequestResponseMetadata(request_id=request_id)
         if raw_request:
@@ -273,6 +285,13 @@ class OpenAIServingChat(OpenAIServing):
             sub_request_id = (
                 request_id if len(engine_inputs) == 1 else f"{request_id}_{i}"
             )
+            if trace_ttft:
+                log_ttft_trace(
+                    logger,
+                    stage="api_request_id_map",
+                    sub_request_id,
+                    parent_request_id=request_id,
+                )
 
             max_tokens = get_max_tokens(
                 max_model_len,
@@ -331,6 +350,13 @@ class OpenAIServingChat(OpenAIServing):
                 else:
                     reasoning_ended = None
 
+                if trace_ttft:
+                    log_ttft_trace(
+                        logger,
+                        stage="api_before_engine_handoff",
+                        sub_request_id,
+                        parent_request_id=request_id,
+                    )
                 generator = self.engine_client.generate(
                     engine_input,
                     sampling_params,
