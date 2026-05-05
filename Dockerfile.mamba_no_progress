@@ -1,0 +1,12 @@
+FROM vllm/vllm-openai:latest
+
+ENV MAMBA_RELAX_TAIL=1
+WORKDIR /workspace/vllm
+
+COPY . /workspace/vllm
+
+# Use uv per repository guidance.
+RUN uv venv --python 3.12 && \
+    VLLM_USE_PRECOMPILED=1 uv pip install -e . --torch-backend=auto
+
+CMD ["python", "benchmarks/mamba_no_progress.py", "--model", "state-spaces/mamba-130m", "--block-size", "2048"]

@@ -74,7 +74,7 @@ struct Selective_Scan_fwd_kernel_traits {
     static constexpr int kSmemSize = kSmemIOSize + sizeof(typename BlockScanT::TempStorage);
 };
 
-template<typename Ktraits>
+template<bool IsAligned, int ChunkSize, typename Ktraits>
 __global__ __launch_bounds__(Ktraits::kNThreads, Ktraits::kMinBlocks)
 void selective_scan_fwd_kernel(SSMParamsBase params) {
     constexpr bool kIsVariableB = Ktraits::kIsVariableB;
@@ -217,6 +217,7 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
             ? cu_chunk_seqlen[first_chunk_idx + chunk + 1] - cu_chunk_seqlen[first_chunk_idx + chunk]
             : min(block_size, seqlen - tokens_processed);
         if (chunk_tokens <= 0) break;
+        const bool is_partial_chunk = !IsAligned || chunk_tokens != ChunkSize;
         input_t u_vals[kNRows][kNItems], delta_vals_load[kNRows][kNItems];
 
         __syncthreads();
@@ -333,8 +334,12 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
 
                     // Store state at the end of each aligned chunk when cache is enabled
                     if (params.cache_enabled && batch_cache_indices != nullptr) {
+                        const bool force_flush = (chunk == n_chunks - 1);
+                        if (is_partial_chunk && !force_flush) {
+                            continue;
+                        }
                         size_t cache_slot;
-                        if (chunk == n_chunks - 1) {
+                        if (force_flush) {
                             cache_slot = batch_cache_indices[block_idx_last_scheduled[batch_id]];
                         } else {
                             const int block_idx_completed = (current_position + chunk_tokens - 1) / block_size;
@@ -413,7 +418,39 @@ void selective_scan_fwd_launch(SSMParamsBase &params, cudaStream_t stream) {
                 using Ktraits = Selective_Scan_fwd_kernel_traits<kNThreads, kNItems, kNRows, kIsEvenLen, kIsVariableB, kIsVariableC, kHasZ,  kVarlen, input_t, weight_t, state_t>;
                 constexpr int kSmemSize = Ktraits::kSmemSize + kNRows * MAX_DSTATE * sizeof(typename Ktraits::scan_t);
                 dim3 grid(params.batch, params.dim / kNRows);
-                auto kernel = &selective_scan_fwd_kernel<Ktraits>;
+                const bool is_aligned_dispatch = (params.cache_enabled && params.block_size > 0
+                                                  && params.seqlen % params.block_size == 0);
+                if (is_aligned_dispatch && params.block_size == 1024) {
+                    auto kernel = &selective_scan_fwd_kernel<true, 1024, Ktraits>;
+                    if (kSmemSize >= 48 * 1024) {
+#ifdef USE_ROCM
+                        C10_HIP_CHECK(hipFuncSetAttribute(
+                            reinterpret_cast<const void*>(kernel), hipFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
+#else
+                        C10_CUDA_CHECK(cudaFuncSetAttribute(
+                            kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
+#endif
+                    }
+                    kernel<<<grid, Ktraits::kNThreads, kSmemSize, stream>>>(params);
+                    C10_CUDA_KERNEL_LAUNCH_CHECK();
+                    return;
+                }
+                if (is_aligned_dispatch && params.block_size == 2048) {
+                    auto kernel = &selective_scan_fwd_kernel<true, 2048, Ktraits>;
+                    if (kSmemSize >= 48 * 1024) {
+#ifdef USE_ROCM
+                        C10_HIP_CHECK(hipFuncSetAttribute(
+                            reinterpret_cast<const void*>(kernel), hipFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
+#else
+                        C10_CUDA_CHECK(cudaFuncSetAttribute(
+                            kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
+#endif
+                    }
+                    kernel<<<grid, Ktraits::kNThreads, kSmemSize, stream>>>(params);
+                    C10_CUDA_KERNEL_LAUNCH_CHECK();
+                    return;
+                }
+                auto kernel = &selective_scan_fwd_kernel<false, 0, Ktraits>;
                 if (kSmemSize >= 48 * 1024) {
 #ifdef USE_ROCM
                     C10_HIP_CHECK(hipFuncSetAttribute(

@@ -805,6 +805,10 @@ class MambaManager(SingleTypeKVCacheManager):
             self.last_state_block_idx: dict[str, int] = {}
             # The set of the requests that have been allocated blocks
             self._allocated_block_reqs: set[str] = set()
+            # Requests that have progressed on a relaxed, sub-block tail.
+            # Their tail state should not be persisted until the next aligned
+            # boundary.
+            self._deferred_tail_reqs: set[str] = set()
 
     @classmethod
     def find_longest_cache_hit(
@@ -1039,6 +1043,7 @@ class MambaManager(SingleTypeKVCacheManager):
         if self.mamba_cache_mode == "align":
             self._allocated_block_reqs.discard(request_id)
             self.last_state_block_idx.pop(request_id, None)
+            self._deferred_tail_reqs.discard(request_id)
         super().free(request_id)
 
     def get_num_skipped_tokens(self, num_computed_tokens: int) -> int:
@@ -1050,6 +1055,13 @@ class MambaManager(SingleTypeKVCacheManager):
         return num_computed_tokens - 1
 
     def cache_blocks(self, request: Request, num_tokens: int) -> None:
+        if (
+            self.mamba_cache_mode == "align"
+            and request.request_id in self._deferred_tail_reqs
+        ):
+            # Deferred-tail semantics: allow compute progress but only persist
+            # up to the most recent aligned boundary to avoid block churn.
+            num_tokens = num_tokens // self.block_size * self.block_size
         num_cached_blocks_before = self.num_cached_block.get(request.request_id, 0)
         super().cache_blocks(request, num_tokens)
         num_cached_blocks_after = self.num_cached_block.get(request.request_id, 0)
@@ -1061,6 +1073,15 @@ class MambaManager(SingleTypeKVCacheManager):
                     continue
                 assert block.block_hash is not None
                 self.cached_blocks_this_step.add(block.block_hash)
+
+        if self.mamba_cache_mode == "align":
+            # Once we cache at an aligned boundary we can clear deferred-tail
+            # bookkeeping.
+            if request._has_uncached_tail:
+                self._deferred_tail_reqs.add(request.request_id)
+            if num_tokens % self.block_size == 0:
+                self._deferred_tail_reqs.discard(request.request_id)
+                request._has_uncached_tail = False
 
     def new_step_starts(self) -> None:
         self.cached_blocks_this_step.clear()
