@@ -116,6 +116,7 @@ class AsyncLLM(EngineClient):
             init_tracer("vllm.llm_engine", tracing_endpoint)
 
         self.log_requests = log_requests
+        self.trace_ttft = os.getenv("VLLM_TRACE_TTFT", "0") == "1"
 
         custom_stat_loggers = list(stat_loggers or [])
         custom_stat_loggers.extend(load_stat_logger_plugin_factories())
@@ -297,6 +298,16 @@ class AsyncLLM(EngineClient):
     ) -> RequestOutputCollector:
         """Add new request to the AsyncLLM."""
 
+        if self.trace_ttft:
+            logger.info(
+                "[TTFT_TRACE] stage=async_add_request_entry request_id=%s "
+                "t=%.6f pid=%d wall_ns=%d",
+                request_id,
+                time.perf_counter(),
+                os.getpid(),
+                time.time_ns(),
+            )
+
         if self.errored:
             raise EngineDeadError()
 
@@ -409,6 +420,15 @@ class AsyncLLM(EngineClient):
         self.output_processor.add_request(request, prompt, parent_req, index, queue)
 
         # Add the EngineCoreRequest to EngineCore (separate process).
+        if self.trace_ttft:
+            logger.info(
+                "[TTFT_TRACE] stage=async_before_enginecore_add request_id=%s "
+                "t=%.6f pid=%d wall_ns=%d",
+                request.request_id,
+                time.perf_counter(),
+                os.getpid(),
+                time.time_ns(),
+            )
         await self.engine_core.add_request_async(request)
 
         if self.log_requests:
