@@ -159,6 +159,41 @@ class KVCacheManager:
             tuple(() for _ in range(self.num_kv_cache_groups))
         )
 
+    def _estimate_num_blocks_to_allocate(
+        self,
+        request: Request,
+        num_new_tokens: int,
+        num_new_computed_tokens: int = 0,
+        new_computed_blocks: KVCacheBlocks | None = None,
+        num_lookahead_tokens: int = 0,
+        num_external_computed_tokens: int = 0,
+        num_encoder_tokens: int = 0,
+    ) -> int:
+        if new_computed_blocks is not None:
+            new_computed_block_list = new_computed_blocks.blocks
+        else:
+            new_computed_block_list = self.empty_kv_cache_blocks.blocks
+        num_local_computed_tokens = (
+            request.num_computed_tokens + num_new_computed_tokens
+        )
+        total_computed_tokens = min(
+            num_local_computed_tokens + num_external_computed_tokens,
+            self.max_model_len,
+        )
+        num_tokens_main_model = total_computed_tokens + num_new_tokens
+        num_tokens_need_slot = min(
+            num_tokens_main_model + num_lookahead_tokens,
+            self.max_model_len,
+        )
+        return self.coordinator.get_num_blocks_to_allocate(
+            request_id=request.request_id,
+            num_tokens=num_tokens_need_slot,
+            new_computed_blocks=new_computed_block_list,
+            num_encoder_tokens=num_encoder_tokens,
+            total_computed_tokens=total_computed_tokens,
+            num_tokens_main_model=num_tokens_main_model,
+        )
+
     @property
     def usage(self) -> float:
         """Get the KV cache usage.
@@ -322,6 +357,27 @@ class KVCacheManager:
         else:
             new_computed_block_list = self.empty_kv_cache_blocks.blocks
 
+        free_blocks_at_attempt = self.block_pool.get_num_free_blocks()
+        estimated_blocks_needed = self._estimate_num_blocks_to_allocate(
+            request=request,
+            num_new_tokens=num_new_tokens,
+            num_new_computed_tokens=num_new_computed_tokens,
+            new_computed_blocks=new_computed_blocks,
+            num_lookahead_tokens=num_lookahead_tokens,
+            num_external_computed_tokens=num_external_computed_tokens,
+            num_encoder_tokens=num_encoder_tokens,
+        )
+        if estimated_blocks_needed > self.block_pool.num_gpu_blocks:
+            logger.debug(
+                "allocate_slots fast-fail req=%s allocation_fail_reason=%s "
+                "estimated_blocks_needed=%d free_blocks_at_attempt=%d",
+                request.request_id,
+                "insufficient_total_capacity",
+                estimated_blocks_needed,
+                free_blocks_at_attempt,
+            )
+            return None
+
         # The number of computed tokens is the number of computed tokens plus
         # the new prefix caching hits
         num_local_computed_tokens = (
@@ -375,6 +431,14 @@ class KVCacheManager:
 
         if num_blocks_to_allocate > self.block_pool.get_num_free_blocks():
             # Cannot allocate new blocks
+            logger.debug(
+                "allocate_slots failed req=%s allocation_fail_reason=%s "
+                "estimated_blocks_needed=%d free_blocks_at_attempt=%d",
+                request.request_id,
+                "insufficient_free_blocks",
+                estimated_blocks_needed,
+                free_blocks_at_attempt,
+            )
             return None
 
         if (
